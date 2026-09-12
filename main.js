@@ -518,19 +518,31 @@
       name: 'Meadow',
       icon: '🌱',
       bg: 0x070b18,
-      ground: 0x0d1730,
+      ground: 0x0f3a2a,
       grid: 0xffffff,
       wall: 0x2f9dff,
       css: '#070b18',
+      ob: 'box',
+      obColor: 0x5a6b2f,
+      hemiSky: 0x9fc5ff,
+      hemiGround: 0x1c331c,
+      decor: 'tuft',
+      tex: 'speckle',
     },
     {
       name: 'Desert',
       icon: '🏜️',
       bg: 0x150e03,
-      ground: 0x2b2009,
+      ground: 0x3a2a10,
       grid: 0xffd9a0,
       wall: 0xfa9418,
       css: '#150e03',
+      ob: 'rock',
+      obColor: 0xb07a3f,
+      hemiSky: 0xffd9a0,
+      hemiGround: 0x3a2410,
+      decor: 'dunerock',
+      tex: 'ripples',
     },
     {
       name: 'Ocean',
@@ -540,6 +552,12 @@
       grid: 0xbfe9ff,
       wall: 0x1da2d8,
       css: '#02101c',
+      ob: 'cry',
+      obColor: 0x2fbfa5,
+      hemiSky: 0xbfe9ff,
+      hemiGround: 0x06283d,
+      decor: 'shell',
+      tex: 'waves',
     },
     {
       name: 'Volcano',
@@ -549,6 +567,12 @@
       grid: 0xffb59d,
       wall: 0xff4d2d,
       css: '#170404',
+      ob: 'rock',
+      obColor: 0x54201c,
+      hemiSky: 0xffb59d,
+      hemiGround: 0x2b0d0d,
+      decor: 'shard',
+      tex: 'cracks',
     },
     {
       name: 'Space',
@@ -558,6 +582,12 @@
       grid: 0xd9c6ff,
       wall: 0x9d5cff,
       css: '#0b0618',
+      ob: 'box',
+      obColor: 0x5a5f8a,
+      hemiSky: 0xd9c6ff,
+      hemiGround: 0x0b0618,
+      decor: 'roid',
+      tex: 'starspeck',
     },
     {
       name: 'Forest',
@@ -567,6 +597,12 @@
       grid: 0xc9f2c7,
       wall: 0x3ddc84,
       css: '#06120b',
+      ob: 'spike',
+      obColor: 0x2e5b34,
+      hemiSky: 0xc9f2c7,
+      hemiGround: 0x0e2a1a,
+      decor: 'pine',
+      tex: 'moss',
     },
     {
       name: 'Sunset',
@@ -576,6 +612,12 @@
       grid: 0xffd1a8,
       wall: 0xff8c42,
       css: '#170b12',
+      ob: 'box',
+      obColor: 0x8a4a2a,
+      hemiSky: 0xffd1a8,
+      hemiGround: 0x33182a,
+      decor: 'mesa',
+      tex: 'dunes',
     },
     {
       name: 'Ice',
@@ -585,6 +627,12 @@
       grid: 0xe8fbff,
       wall: 0x7fcdff,
       css: '#0a1420',
+      ob: 'cry',
+      obColor: 0x9fdcff,
+      hemiSky: 0xe8fbff,
+      hemiGround: 0x16324a,
+      decor: 'shardice',
+      tex: 'frost',
     },
   ];
   var themeIdx = 0;
@@ -594,13 +642,32 @@
     if (mode === '3d' && scene) {
       scene.background.setHex(L.bg);
       scene.fog.color.setHex(L.bg);
+      if (window.__hemi) {
+        window.__hemi.color.setHex(L.hemiSky);
+        window.__hemi.groundColor.setHex(L.hemiGround);
+      }
       if (window.__groundMat) window.__groundMat.color.setHex(L.ground);
+      if (window.__skirtMat) {
+        window.__skirtMat.color.setHex(L.bg);
+        window.__skirtMat.color.multiplyScalar(1.5);
+      }
       if (window.__gridMat) window.__gridMat.color.setHex(L.grid);
       if (window.__wallMat) {
         window.__wallMat.color.setHex(L.wall);
         window.__wallMat.emissive.setHex(L.wall);
       }
+      if (window.__obMat) {
+        window.__obMat.color.setHex(L.obColor);
+        window.__obMat.emissive.setHex(L.obColor);
+        window.__obMat.emissive.multiplyScalar(0.35);
+      }
+      var og = window.__obGeos ? window.__obGeos[L.ob] : null;
+      if (og) {
+        window.__obGeo = og;
+        for (var oi = 0; oi < obstacleMeshes.length; oi++) obstacleMeshes[oi].geometry = og;
+      }
       if (window.__stars) window.__stars.visible = LEVELS[themeIdx].name === 'Space';
+      applyQualityVisuals();
     }
     return L;
   }
@@ -1549,7 +1616,8 @@
     camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
     window.__ray = new THREE.Raycaster();
 
-    scene.add(new THREE.HemisphereLight(0x8fb4ff, 0x0a0f22, 0.9));
+    window.__hemi = new THREE.HemisphereLight(0x8fb4ff, 0x0a0f22, 0.9);
+    scene.add(window.__hemi);
     scene.add(new THREE.AmbientLight(0xffffff, 0.15));
     dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
     dirLight.position.set(10, 18, 6);
@@ -1569,6 +1637,16 @@
     ground.receiveShadow = true;
     scene.add(ground);
     window.__groundMat = ground.material;
+    // outer skirt: decor sits on something instead of floating in the void
+    var skirt = new THREE.Mesh(
+      new THREE.PlaneGeometry(120, 120),
+      new THREE.MeshStandardMaterial({ color: 0x0a1020, roughness: 1 })
+    );
+    skirt.rotation.x = -Math.PI / 2;
+    skirt.position.y = -0.05;
+    skirt.receiveShadow = false;
+    scene.add(skirt);
+    window.__skirtMat = skirt.material;
     var grid = new THREE.GridHelper(GRID, GRID, 0x2f6bff, 0x1a2a55);
     grid.position.y = 0.02;
     grid.material.transparent = true;
@@ -1603,10 +1681,18 @@
     window.__eyeGeo = new THREE.SphereGeometry(0.11, 12, 12);
     window.__eyeMat = new THREE.MeshBasicMaterial({ color: 0x06130c });
     window.__obGeo = new THREE.BoxGeometry(0.92, 1.5, 0.92);
+    window.__obGeos = {
+      box: window.__obGeo,
+      rock: new THREE.DodecahedronGeometry(0.8),
+      spike: new THREE.ConeGeometry(0.55, 1.6, 6),
+      cry: new THREE.OctahedronGeometry(0.8),
+    };
+    window.__obGeos.cry.scale(1, 1.4, 1);
     window.__obMat = new THREE.MeshStandardMaterial({ color: 0x3b2a5e, emissive: 0x1a0f33, roughness: 0.6 });
     // head glow light follows the snake
     window.__headLight = new THREE.PointLight(0x39ff88, 1.0, 7);
     scene.add(window.__headLight);
+    buildDecor();
 
     foodMesh = new THREE.Mesh(
       new THREE.IcosahedronGeometry(0.38, 1),
@@ -1683,16 +1769,18 @@
     window.__stars.visible = false;
     scene.add(window.__stars);
 
-    // head glow trail (ring buffer of recent head positions)
-    window.__trailN = 26;
+    // head glow trail (ring buffer of recent head positions; round soft
+    // sprite — raw PointsMaterial quads read as ugly squares)
+    window.__trailN = 18;
     var trailGeo = new THREE.BufferGeometry();
     window.__trailPos = new Float32Array(window.__trailN * 3);
     trailGeo.setAttribute('position', new THREE.BufferAttribute(window.__trailPos, 3));
     window.__trailMat = new THREE.PointsMaterial({
       color: 0x39ff88,
-      size: 0.34,
+      size: 0.42,
+      map: glowTexture(),
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.5,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
@@ -1814,11 +1902,313 @@
   }
   function makeObstacleMesh() {
     var THREE = window.THREE;
-    var m = new THREE.Mesh(window.__obGeo, window.__obMat);
+    var m = new THREE.Mesh(window.__obGeo || window.__obGeos.box, window.__obMat);
     m.castShadow = true;
     m.receiveShadow = true;
     scene.add(m);
     return m;
+  }
+  // Ground painters: procedural canvas textures (near-white so they multiply
+  // with the themed ground color). Generated once per biome, cached.
+  var TEXPAINTERS = {
+    speckle: function (x, S, accent) {
+      for (var i = 0; i < 500; i++) {
+        x.fillStyle = 'rgba(0,0,0,' + (0.04 + Math.random() * 0.08) + ')';
+        x.fillRect(Math.random() * S, Math.random() * S, 2, 2);
+      }
+    },
+    ripples: function (x, S, accent) {
+      x.strokeStyle = 'rgba(0,0,0,0.10)';
+      x.lineWidth = 3;
+      for (var r = 0; r < 14; r++) {
+        x.beginPath();
+        for (var px = 0; px <= S; px += 8) x.lineTo(px, r * 19 + Math.sin(px / 22 + r) * 5);
+        x.stroke();
+      }
+    },
+    waves: function (x, S, accent) {
+      x.strokeStyle = accent;
+      x.globalAlpha = 0.12;
+      x.lineWidth = 2;
+      for (var r = 0; r < 10; r++)
+        for (var c = 0; c < 4; c++) {
+          x.beginPath();
+          x.arc(c * 70 + 20, r * 28 + 10, 12 + (r % 3) * 4, 0, 7);
+          x.stroke();
+        }
+      x.globalAlpha = 1;
+    },
+    cracks: function (x, S, accent) {
+      x.strokeStyle = 'rgba(0,0,0,0.35)';
+      x.lineWidth = 2;
+      for (var i = 0; i < 22; i++) {
+        var cx = Math.random() * S,
+          cy = Math.random() * S;
+        x.beginPath();
+        x.moveTo(cx, cy);
+        for (var s = 0; s < 4; s++) {
+          cx += (Math.random() - 0.5) * 60;
+          cy += (Math.random() - 0.5) * 60;
+          x.lineTo(cx, cy);
+        }
+        x.stroke();
+      }
+      x.strokeStyle = accent;
+      x.globalAlpha = 0.5;
+      x.lineWidth = 1.5;
+      for (var g = 0; g < 6; g++) {
+        var gx = Math.random() * S,
+          gy = Math.random() * S;
+        x.beginPath();
+        x.moveTo(gx, gy);
+        x.lineTo(gx + (Math.random() - 0.5) * 80, gy + (Math.random() - 0.5) * 80);
+        x.stroke();
+      }
+      x.globalAlpha = 1;
+    },
+    moss: function (x, S, accent) {
+      for (var i = 0; i < 44; i++) {
+        x.fillStyle = 'rgba(0,0,0,0.07)';
+        x.beginPath();
+        x.arc(Math.random() * S, Math.random() * S, 6 + Math.random() * 16, 0, 7);
+        x.fill();
+      }
+    },
+    dunes: function (x, S, accent) {
+      x.strokeStyle = 'rgba(0,0,0,0.09)';
+      x.lineWidth = 9;
+      for (var r = -4; r < 12; r++) {
+        x.beginPath();
+        x.moveTo(r * 32 - 40, 0);
+        x.lineTo(r * 32 + 40, S);
+        x.stroke();
+      }
+    },
+    starspeck: function (x, S, accent) {
+      for (var i = 0; i < 160; i++) {
+        x.fillStyle = 'rgba(255,255,255,' + (0.25 + Math.random() * 0.6) + ')';
+        x.fillRect(Math.random() * S, Math.random() * S, 1.5, 1.5);
+      }
+    },
+    frost: function (x, S, accent) {
+      x.strokeStyle = accent;
+      x.globalAlpha = 0.14;
+      x.lineWidth = 2;
+      for (var i = 0; i < 28; i++) {
+        var sx = Math.random() * S,
+          sy = Math.random() * S;
+        x.beginPath();
+        x.moveTo(sx, sy);
+        x.lineTo(sx + 20 + Math.random() * 30, sy + 6);
+        x.stroke();
+      }
+      x.globalAlpha = 1;
+    },
+  };
+  function paintGround(kind, accentCss) {
+    var S = 256;
+    var c = document.createElement('canvas');
+    c.width = S;
+    c.height = S;
+    var x = c.getContext('2d');
+    x.fillStyle = '#f4f4f4';
+    x.fillRect(0, 0, S, S);
+    (TEXPAINTERS[kind] || TEXPAINTERS.speckle)(x, S, accentCss);
+    var t = new window.THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = window.THREE.RepeatWrapping;
+    t.repeat.set(6, 6);
+    if (window.THREE.SRGBColorSpace !== undefined) t.colorSpace = window.THREE.SRGBColorSpace;
+    return t;
+  }
+  function groundTexFor(i) {
+    if (!window.__groundTex) window.__groundTex = {};
+    if (!window.__groundTex[i]) {
+      var L = LEVELS[i];
+      window.__groundTex[i] = paintGround(L.tex, '#' + L.wall.toString(16).padStart(6, '0'));
+    }
+    return window.__groundTex[i];
+  }
+  // One instanced decor ring per biome, built once, visibility-toggled.
+  // Everything sits OUTSIDE the walls: pure scenery, never gameplay.
+  var DECORTABLE = {
+    tuft: {
+      geo: 'cone',
+      color: 0x3fae5a,
+      em: 0x000000,
+      count: 110,
+      y0: 0.3,
+      y1: 0.3,
+      s0: 0.7,
+      s1: 1.0,
+      ys: 1,
+    },
+    dunerock: {
+      geo: 'rock',
+      color: 0xc49a5f,
+      em: 0x000000,
+      count: 60,
+      y0: 0.3,
+      y1: 0.3,
+      s0: 0.7,
+      s1: 1.3,
+      ys: 1,
+    },
+    shell: {
+      geo: 'cry',
+      color: 0x63d6c2,
+      em: 0x062a28,
+      count: 70,
+      y0: 0.3,
+      y1: 0.3,
+      s0: 0.6,
+      s1: 1.1,
+      ys: 1,
+    },
+    shard: {
+      geo: 'cone',
+      color: 0x3a2323,
+      em: 0x771100,
+      count: 60,
+      y0: 0.45,
+      y1: 0.45,
+      s0: 0.8,
+      s1: 1.2,
+      ys: 1,
+    },
+    roid: { geo: 'rock', color: 0x8a8fa8, em: 0x000000, count: 55, y0: 2, y1: 5.5, s0: 0.6, s1: 1.2, ys: 1 },
+    pine: {
+      geo: 'cone',
+      color: 0x35b95c,
+      em: 0x0a3318,
+      count: 90,
+      y0: 0.9,
+      y1: 0.9,
+      s0: 0.9,
+      s1: 1.3,
+      ys: 1.7,
+      trunk: true,
+    },
+    mesa: { geo: 'cyl', color: 0xb4632e, em: 0x000000, count: 45, y0: 0.6, y1: 0.6, s0: 0.8, s1: 1.4, ys: 1 },
+    shardice: {
+      geo: 'cry',
+      color: 0xcfeaff,
+      em: 0x224455,
+      count: 70,
+      y0: 0.4,
+      y1: 0.4,
+      s0: 0.6,
+      s1: 1.2,
+      ys: 1,
+    },
+  };
+  // radial-gradient sprite: soft round dots for points/particles
+  function glowTexture() {
+    var c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    var x = c.getContext('2d');
+    var g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.4, 'rgba(255,255,255,0.6)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, 64, 64);
+    return new window.THREE.CanvasTexture(c);
+  }
+  function buildDecor() {
+    var THREE = window.THREE;
+    window.__decorGeos = {
+      cone: new THREE.ConeGeometry(0.35, 0.9, 5),
+      rock: new THREE.DodecahedronGeometry(0.5),
+      cry: new THREE.OctahedronGeometry(0.55),
+      cyl: new THREE.CylinderGeometry(0.4, 0.5, 1.2, 6),
+      trunk: new THREE.CylinderGeometry(0.12, 0.17, 0.8, 5),
+    };
+    window.__decorMeshes = [];
+    window.__decorOwner = [];
+    var dummy = new THREE.Object3D();
+    // even ring road: every k-th slot around the arena with jitter. Reads as
+    // intentional landscaping (not noise, not clumps), and the square clamp
+    // below provably keeps every piece off the board + walls.
+    var ringMin = 13.5,
+      ringMax = 22;
+    var trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 });
+    for (var bi = 0; bi < LEVELS.length; bi++) {
+      var D = DECORTABLE[LEVELS[bi].decor];
+      var m = new THREE.InstancedMesh(
+        window.__decorGeos[D.geo],
+        new THREE.MeshStandardMaterial({ color: D.color, emissive: D.em, roughness: 0.85 }),
+        D.count
+      );
+      var tm = null;
+      if (D.trunk) {
+        tm = new THREE.InstancedMesh(window.__decorGeos.trunk, trunkMat, D.count);
+        tm.castShadow = false;
+        tm.receiveShadow = false;
+        tm.visible = false;
+        tm.frustumCulled = false;
+      }
+      for (var k = 0; k < D.count; k++) {
+        // slot k evenly around the ring, jittered; Chebyshev clamp keeps a
+        // hard clear margin off the ±10.25 walls on every side + corner
+        var sa = ((k + 0.15 + Math.random() * 0.7) / D.count) * Math.PI * 2;
+        var sr = 14 + Math.random() * 4.5;
+        var px = Math.cos(sa) * sr,
+          pz = Math.sin(sa) * sr;
+        var pm = Math.max(Math.abs(px), Math.abs(pz));
+        if (pm < ringMin) {
+          px *= ringMin / pm;
+          pz *= ringMin / pm;
+        } else if (pm > ringMax) {
+          px *= ringMax / pm;
+          pz *= ringMax / pm;
+        }
+        var s = D.s0 + Math.random() * (D.s1 - D.s0);
+        dummy.position.set(px, D.y0 + Math.random() * (D.y1 - D.y0), pz);
+        dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+        dummy.scale.set(s, s * (D.ys || 1), s);
+        dummy.updateMatrix();
+        m.setMatrixAt(k, dummy.matrix);
+        if (tm) {
+          dummy.position.set(px, 0.4 * s, pz);
+          dummy.scale.set(s, s, s);
+          dummy.updateMatrix();
+          tm.setMatrixAt(k, dummy.matrix);
+        }
+      }
+      m.instanceMatrix.needsUpdate = true;
+      if (tm) tm.instanceMatrix.needsUpdate = true;
+      m.castShadow = false;
+      m.receiveShadow = false;
+      m.visible = false;
+      m.frustumCulled = false;
+      scene.add(m);
+      window.__decorMeshes.push(m);
+      window.__decorOwner.push(bi);
+      if (tm) {
+        scene.add(tm);
+        window.__decorMeshes.push(tm);
+        window.__decorOwner.push(bi);
+      }
+    }
+  }
+  function updateDecorVisibility() {
+    if (!window.__decorMeshes) return;
+    for (var i = 0; i < window.__decorMeshes.length; i++)
+      window.__decorMeshes[i].visible =
+        mode === '3d' && window.__decorOwner[i] === themeIdx && quality !== 'low';
+  }
+  // Quality-gated visuals: low tier sheds texture + decor (flat classic look)
+  function applyQualityVisuals() {
+    if (mode !== '3d' || !scene) return;
+    if (window.__groundMat) {
+      var wantMap = quality !== 'low';
+      if (!!window.__groundMat.map !== wantMap) {
+        window.__groundMat.map = wantMap ? groundTexFor(themeIdx) : null;
+        window.__groundMat.needsUpdate = true;
+      }
+    }
+    updateDecorVisibility();
   }
   function syncObstacleMeshes(snap) {
     if (mode !== '3d' || !window.__obGeo) return;
@@ -2017,7 +2407,7 @@
     }
     var ob;
     for (ob = 0; ob < obstacles.length; ob++) {
-      ctx2d.fillStyle = '#4a3670';
+      ctx2d.fillStyle = '#' + LEVELS[themeIdx].wall.toString(16).padStart(6, '0');
       ctx2d.fillRect(ox + obstacles[ob].x * cell + 1, oy + obstacles[ob].y * cell + 1, cell - 2, cell - 2);
       ctx2d.strokeStyle = '#241a3d';
       ctx2d.lineWidth = 2;
@@ -2120,6 +2510,7 @@
           if (o.material) o.material.needsUpdate = true;
         });
     }
+    applyQualityVisuals();
     toast(t('perf_t', { q: quality }));
   }
   function animate(now) {
@@ -2374,6 +2765,24 @@
     },
     get view() {
       return { ox: view2d.ox, oy: view2d.oy, cell: view2d.cell, dpr: view2d.dpr };
+    },
+    // footprint audit: min Chebyshev distance of every decor instance from
+    // board center (walls sit at ±10.25). Proves nothing spills onto play.
+    decorStats: function () {
+      var minCheb = Infinity,
+        total = 0;
+      if (window.__decorMeshes) {
+        for (var i = 0; i < window.__decorMeshes.length; i++) {
+          var arr = window.__decorMeshes[i].instanceMatrix.array;
+          var n = window.__decorMeshes[i].count;
+          for (var k = 0; k < n; k++) {
+            var m = Math.max(Math.abs(arr[k * 16 + 12]), Math.abs(arr[k * 16 + 14]));
+            if (m < minCheb) minCheb = m;
+            total++;
+          }
+        }
+      }
+      return { minCheb: minCheb === Infinity ? -1 : Math.round(minCheb * 100) / 100, total: total };
     },
     setBonus: function (x, y, ttl) {
       bonus = { x: x, y: y };

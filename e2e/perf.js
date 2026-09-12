@@ -29,6 +29,12 @@ const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
     page.on('pageerror', (e) => errors.push(String((e && e.message) || e)));
     await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
     await page.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    // launch flakes (dead SwiftShader/CDN fetch) land in 2D: one clean reload
+    // distinguishes that from a real regression before any measurement
+    if ((await page.evaluate(() => window.__game.mode)) !== '3d') {
+      await page.reload({ waitUntil: 'load' });
+      await page.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    }
     // wrap mode: snake survives the whole probe window unattended
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = true;
@@ -42,8 +48,8 @@ const EDGE = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
       if (!ok) fail++;
     };
     budget('mode is 3d (WebGL probe valid)', (await page.evaluate(() => window.__game.mode)) === '3d');
-    budget('draw calls < 120', p.calls < 120, 'calls=' + p.calls);
-    budget('triangles < 60000', p.tris < 60000, 'tris=' + p.tris);
+    budget('draw calls < 60', p.calls < 60, 'calls=' + p.calls);
+    budget('triangles < 30000', p.tris < 30000, 'tris=' + p.tris);
     budget('fps above catastrophic floor (>5)', p.fps > 5, 'fps=' + p.fps);
     budget('no page errors', errors.length === 0, errors.slice(0, 2).join(' | '));
     await page.close();

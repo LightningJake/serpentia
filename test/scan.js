@@ -112,6 +112,37 @@ const missingInputs = [...new Set(settingIds)].filter((id) => !ids.includes(id))
 if (missingInputs.length) bad('setting inputs', missingInputs.join(', '));
 else good('setting inputs');
 
+// ---- 13. LEVELS entries complete + decor/tex keys resolve
+const levelsRegion = main.slice(main.indexOf('var LEVELS = ['), main.indexOf('var themeIdx'));
+const levelFields = [
+  'name',
+  'icon',
+  'bg',
+  'ground',
+  'grid',
+  'wall',
+  'css',
+  'ob',
+  'obColor',
+  'hemiSky',
+  'hemiGround',
+  'decor',
+  'tex',
+];
+const incomplete = levelFields.filter((f) => {
+  const c = (levelsRegion.match(new RegExp('\\b' + f + '\\s*:', 'g')) || []).length;
+  return c !== 8;
+});
+const decorVals = [...levelsRegion.matchAll(/decor: '(\w+)'/g)].map((m) => m[1]);
+const texVals = [...levelsRegion.matchAll(/tex: '(\w+)'/g)].map((m) => m[1]);
+const decorTable = main.slice(main.indexOf('var DECORTABLE = {'));
+const texTable = main.slice(main.indexOf('var TEXPAINTERS = {'));
+const badDecor = [...new Set(decorVals)].filter((k) => !new RegExp('\\b' + k + '\\s*:').test(decorTable));
+const badTex = [...new Set(texVals)].filter((k) => !new RegExp('\\b' + k + '\\s*:').test(texTable));
+const levelProblems = [...incomplete.map((f) => 'field:' + f), ...badDecor, ...badTex];
+if (levelProblems.length) bad('biome completeness', levelProblems.join(', '));
+else good('biome completeness (8 biomes, decor+painters resolve)');
+
 // ---- 12. duplicate keys inside the __game hooks literal
 const hookRegion = hookSrc.slice(0, hookSrc.indexOf('// ---------- Boot'));
 const keyCounts = {};
