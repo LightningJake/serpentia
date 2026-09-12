@@ -73,9 +73,21 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         window.__game.setSnake([{ x: 0, y: 0 }]);
         window.__game.setFood(19, 19);
       });
-      await page.waitForTimeout(3200); // camera framing eases in (~2s+)
-      const head = await page.evaluate(() => window.__game.project(0, 0));
-      const food = await page.evaluate(() => window.__game.project(19, 19));
+      // wait for the framing servo to converge, capturing the passing values
+      // atomically (a separate read afterwards could race the easing).
+      // Slow software GL needs wall-clock time; a broken camera times out.
+      const framed = await page.waitForFunction(
+        () => {
+          const h = window.__game.project(0, 0);
+          const f = window.__game.project(19, 19);
+          const ok = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1;
+          if (ok(h) && ok(f)) return { head: h, food: f };
+          return null;
+        },
+        null,
+        { timeout: 30000 }
+      );
+      const { head, food } = await framed.jsonValue();
       check(
         d.name + ': opposite corners framed',
         inside(head) && inside(food),

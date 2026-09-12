@@ -785,6 +785,66 @@ async function newPage(browser, blockCDN) {
       ((await page.locator('#ov-title').textContent()) || '').trim() === 'Game Over'
     );
 
+    // SEO/social: absolute OG tags, resolve 200, valid game schema + crawler files
+    const ogImage = await page.evaluate(() =>
+      document.querySelector('meta[property="og:image"]').getAttribute('content')
+    );
+    check('seo: og:image absolute', /^https:\/\//.test(ogImage || ''), ogImage);
+    check(
+      'seo: og:image points at production file',
+      ogImage === 'https://serpentia-coral.vercel.app/og-image.png',
+      ogImage
+    );
+    // same-origin fetch proves WE ship the bytes; live.js re-checks production after deploy
+    const ogStatus = await page.evaluate(() =>
+      fetch('og-image.png')
+        .then((r) => r.status)
+        .catch(() => -1)
+    );
+    check('seo: og:image resolves', ogStatus === 200, String(ogStatus));
+    check(
+      'seo: twitter card + url',
+      (await page.evaluate(
+        () =>
+          document.querySelector('meta[name="twitter:card"]').getAttribute('content') +
+          '|' +
+          document.querySelector('meta[property="og:url"]').getAttribute('content')
+      )) === 'summary_large_image|https://serpentia-coral.vercel.app/'
+    );
+    const schemaName = await page.evaluate(() => {
+      try {
+        return JSON.parse(document.querySelector('script[type="application/ld+json"]').textContent).name;
+      } catch (e) {
+        return null;
+      }
+    });
+    check('seo: game schema parses', schemaName === '3D Snake', String(schemaName));
+    const robotsTxt = await page.evaluate(() =>
+      fetch('robots.txt')
+        .then((r) => r.text())
+        .catch(() => '')
+    );
+    const sitemapXml = await page.evaluate(() =>
+      fetch('sitemap.xml')
+        .then((r) => r.text())
+        .catch(() => '')
+    );
+    check(
+      'seo: robots + sitemap serve',
+      /Allow: \//.test(robotsTxt) && /serpentia-coral\.vercel\.app/.test(sitemapXml)
+    );
+
+    // Install flow: synthetic beforeinstallprompt surfaces the row; click falls back cleanly
+    await page.evaluate(() => window.dispatchEvent(new Event('beforeinstallprompt')));
+    await page.waitForTimeout(150);
+    check('install: row appears on prompt', await page.locator('#install-row').isVisible());
+    await page.locator('#btn-install').click();
+    await page.waitForTimeout(250);
+    check(
+      'install: manual hint without native prompt',
+      (await page.locator('#toast.show').count()) >= 1 &&
+        /Home screen/.test((await page.locator('#toast').textContent()) || '')
+    );
     // PWA: manifest serves, Three.js cached for offline
     const manStatus = await page.evaluate(() =>
       fetch('manifest.json')

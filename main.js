@@ -1224,6 +1224,32 @@
   });
   onTap($('btn-prestige'), doPrestige);
   onTap($('btn-share'), shareScore);
+  // PWA install: surfaced only when the browser fires beforeinstallprompt
+  var deferredInstall = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    try {
+      e.preventDefault();
+    } catch (err) {}
+    deferredInstall = e;
+    var r = $('install-row');
+    if (r) r.hidden = false;
+  });
+  window.addEventListener('appinstalled', function () {
+    deferredInstall = null;
+    var r = $('install-row');
+    if (r) r.hidden = true;
+    toast(t('install_ok'));
+    announce(t('install_ok'));
+  });
+  onTap($('btn-install'), function () {
+    if (deferredInstall && typeof deferredInstall.prompt === 'function') {
+      try {
+        deferredInstall.prompt();
+        if (deferredInstall.userChoice && deferredInstall.userChoice.catch)
+          deferredInstall.userChoice.catch(function () {});
+      } catch (e) {}
+    } else toast(t('install_manual'));
+  });
   var segBtns = document.querySelectorAll('#mode-seg button');
   for (var gi = 0; gi < segBtns.length; gi++) {
     (function (b) {
@@ -2006,6 +2032,10 @@
     var dt = (now - lastT) / 1000;
     lastT = now;
     if (!(dt >= 0)) dt = 0;
+    // camera easing gets its own generous clamp: it is purely visual, so on
+    // very slow devices the view still converges in wall-clock time instead
+    // of lagging seconds behind (logic keeps the strict MAX_DT clamp).
+    var cdt = Math.min(dt, 0.5);
     if (dt > MAX_DT) dt = MAX_DT;
     if (dt > 0) fpsEMA += (1 / dt - fpsEMA) * 0.05;
     qualityTick(now);
@@ -2036,7 +2066,7 @@
     }
 
     var t = now / 1000;
-    var k = Math.min(1, dt * LERP_SPEED);
+    var k = Math.min(1, cdt * LERP_SPEED);
     var eff = queue.length ? queue[0] : dir;
     if (squash > 0) squash = Math.max(0, squash - dt * 4);
     for (var i = 0; i < snakeMeshes.length; i++) {
@@ -2132,13 +2162,13 @@
     if (performance.now() - lastZoomAt > 5000) {
       var baseR = topView ? 26 : 21;
       var wantR = Math.max(baseR, Math.min(62, baseR + hfDist * 1.4 + snake.length * 0.08));
-      radius += (wantR - radius) * Math.min(1, dt * 1.5);
+      radius += (wantR - radius) * Math.min(1, cdt * 1.5);
     }
     if (topView) desiredTarget.set(0, 0, 0);
     else if ($('opt-follow').checked)
       desiredTarget.set(head.x * 0.55 + fw.x * 0.45, 0, head.z * 0.55 + fw.z * 0.45);
     else desiredTarget.set(0, 0, 0);
-    camTarget.lerp(desiredTarget, Math.min(1, dt * 3));
+    camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
     var sx = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     var sy = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     if (shake > 0) shake = Math.max(0, shake - dt * 1.4);
@@ -2236,7 +2266,14 @@
       try {
         pr = renderer ? renderer.getPixelRatio() : 0;
       } catch (e2) {}
-      return { fps: Math.round(fpsEMA), calls: info.calls, tris: info.tris, quality: quality, pr: pr };
+      return {
+        fps: Math.round(fpsEMA),
+        calls: info.calls,
+        tris: info.tris,
+        quality: quality,
+        pr: pr,
+        radius: Math.round(radius * 10) / 10,
+      };
     },
     setTheme: function (i) {
       applyTheme(i);

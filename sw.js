@@ -1,6 +1,6 @@
 /* 3D Snake service worker: cache-first so the game (including the
  * Three.js CDN) works offline after the first visit. */
-const CACHE = 'snake-v1';
+const CACHE = 'snake-v2';
 const LOCAL = [
   './',
   './index.html',
@@ -10,6 +10,9 @@ const LOCAL = [
   './i18n.js',
   './manifest.json',
   './icon.svg',
+  './og-image.png',
+  './robots.txt',
+  './sitemap.xml',
 ];
 const CDN = ['https://cdnjs.cloudflare.com/ajax/libs/three.js/0.149.0/three.min.js'];
 

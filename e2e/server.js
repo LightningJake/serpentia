@@ -10,6 +10,9 @@ const MIME = {
   '.css': 'text/css',
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.xml': 'application/xml',
+  '.txt': 'text/plain',
 };
 
 function serve(port) {

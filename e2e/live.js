@@ -53,6 +53,19 @@ async function launch() {
     check('live: boots to menu', (await g(page, 'state')) === 'menu');
     check('live: loader hidden', await page.locator('#loader').isHidden());
     check('live: boot under 15s on this link', bootMs < 15000, bootMs + 'ms');
+    // release artifacts must exist on production (fails right after new files until redeploy)
+    const liveOg = await page.evaluate(() =>
+      fetch('og-image.png')
+        .then((r) => r.status)
+        .catch(() => -1)
+    );
+    const liveRobots = await page.evaluate(() =>
+      fetch('robots.txt')
+        .then((r) => r.text())
+        .catch(() => '')
+    );
+    check('live: og-image deployed', liveOg === 200, String(liveOg));
+    check('live: robots+sitemap deployed', /Allow: \//.test(liveRobots));
 
     // full run: start -> eat -> die -> restart -> pause menu
     await page.locator('#btn-play').click();
