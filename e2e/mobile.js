@@ -100,7 +100,24 @@ const g = (page, expr) => page.evaluate(new Function('return window.__game.' + e
       window.__game.setCam(0, 0.95);
       window.__game.pause();
     });
-    await page.waitForTimeout(300); // let camera.position settle onto the orbit
+    // Poll the live basis instead of a fixed sleep: under a loaded machine
+    // SwiftShader starves rAF and 300ms is not enough orbit easing, leaving
+    // a diagonal basis where screen-right ties with up (a correct no-op).
+    let settled = false;
+    try {
+      await page.waitForFunction(
+        () => {
+          const b = window.__game.basis();
+          return Math.abs(b.rx) > 0.98 && Math.abs(b.fz) > 0.98;
+        },
+        null,
+        { timeout: 10000 }
+      );
+      settled = true;
+    } catch (e) {
+      settled = false;
+    }
+    check('m-swipe: camera settled axis-aligned', settled);
     await page.evaluate(() => {
       const c = document.getElementById('scene');
       const mk = (id, x, y) => new Touch({ identifier: id, target: c, clientX: x, clientY: y });

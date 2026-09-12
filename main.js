@@ -2308,20 +2308,34 @@
     var ang = Math.atan2(sx, sy);
     var ax = hs && !hs.behind ? ((hs.x + 1) / 2) * window.innerWidth : window.innerWidth / 2;
     var ay = hs && !hs.behind ? ((1 - hs.y) / 2) * window.innerHeight : window.innerHeight / 2;
-    var R = 110;
-    var px = ax + Math.sin(ang) * R,
-      py = ay - Math.cos(ang) * R;
-    // shrink the offset to fit instead of clamping: clamping skews the
-    // bearing, shrinking keeps the arrow truthful on narrow screens
-    var R2 = R;
-    for (var fit = 0; fit < 12; fit++) {
-      px = ax + Math.sin(ang) * R2;
-      py = ay - Math.cos(ang) * R2;
-      if (px >= 46 && px <= window.innerWidth - 46 && py >= 120 && py <= window.innerHeight - 190) break;
-      R2 *= 0.85;
-    }
-    px = Math.max(46, Math.min(window.innerWidth - 46, px));
-    py = Math.max(120, Math.min(window.innerHeight - 190, py));
+    // Safe box for the marker: clear of the HUD (top), the D-pad (bottom)
+    // and the screen edges. The anchor is clamped into it first, so the ray
+    // below always starts inside and a box-exit hit is guaranteed to exist.
+    var x0 = 46,
+      x1 = window.innerWidth - 46,
+      y0 = 120,
+      y1 = window.innerHeight - 190;
+    ax = Math.max(x0, Math.min(x1, ax));
+    ay = Math.max(y0, Math.min(y1, ay));
+    // Analytic ray -> box-exit placement: the arrow sits exactly on the
+    // bearing ray from the anchor, as far out as fits. The old
+    // shrink-then-hard-clamp loop could never converge when the head sat
+    // near the box edge (R2 collapsed, then the clamp yanked the arrow
+    // sideways and destroyed the bearing); this cannot skew by construction.
+    // MIN_LEVER keeps a lever arm so one stale frame under software GL can
+    // never dominate the measured angle.
+    var vx = Math.sin(ang),
+      vy = -Math.cos(ang);
+    var tExit = Infinity;
+    if (Math.abs(vx) > 1e-9) tExit = Math.min(tExit, vx > 0 ? (x1 - ax) / vx : (x0 - ax) / vx);
+    if (Math.abs(vy) > 1e-9) tExit = Math.min(tExit, vy > 0 ? (y1 - ay) / vy : (y0 - ay) / vy);
+    if (!isFinite(tExit) || tExit < 0) tExit = 0;
+    var R = 110,
+      MIN_LEVER = 26,
+      PAD = 10;
+    var t = Math.min(R, Math.max(tExit - PAD, MIN_LEVER));
+    var px = ax + vx * t,
+      py = ay + vy * t;
     var mdx = Math.abs(food.x - snake[0].x);
     var mdz = Math.abs(food.y - snake[0].y);
     if ($('opt-wrap').checked) {
@@ -2830,6 +2844,11 @@
     setCam: function (t, p) {
       theta = t;
       phi = Math.max(0.16, Math.min(1.25, p));
+    },
+    // Read-only camera basis for the swipe suite: it must wait until the
+    // orbit actually settles before asserting screen-absolute steering.
+    basis: function () {
+      return camBasis();
     },
   };
 

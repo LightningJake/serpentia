@@ -96,7 +96,17 @@ async function launch() {
     const m1 = await page.evaluate(() => window.__game.musicPlaying());
     await page.locator('#btn-pause').click();
     await page.waitForTimeout(150);
-    await page.locator('#btn-quit').click();
+    // Fail fast with the live state if the pause menu did not open (under a
+    // loaded machine a click can land mid-transition); a blind 30s click
+    // timeout here used to abort the whole file with zero diagnostics.
+    let quitOk = true;
+    try {
+      await page.locator('#btn-quit').click({ timeout: 5000 });
+    } catch (e) {
+      quitOk = false;
+    }
+    const quitState = (await g(page, 'state')) + '/menu=' + (await page.locator('#pause-menu').isVisible());
+    check('edge: quit clickable from pause menu', quitOk, quitState);
     await page.waitForTimeout(150);
     const m2 = await page.evaluate(() => window.__game.musicPlaying());
     check(

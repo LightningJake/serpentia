@@ -88,8 +88,9 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         const sample = await page.evaluate(() => {
           const sc = window.__game.snake[0];
           const fc = window.__game.food;
-          const r = document.getElementById('food-arrow').getBoundingClientRect();
+          if (!sc || !fc) return null;
           const hs = window.__game.screenFor(sc.x, sc.y);
+          if (!hs) return null; // renderer mid-reload; caller retries
           let dx = fc.x - sc.x,
             dy = fc.y - sc.y;
           if (document.getElementById('opt-wrap').checked) {
@@ -97,6 +98,8 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
             dy -= 20 * Math.round(dy / 20);
           }
           const fs = window.__game.screenFor(sc.x + dx, sc.y + dy);
+          if (!fs) return null; // renderer mid-reload; caller retries
+          const r = document.getElementById('food-arrow').getBoundingClientRect();
           const ax = r.left + r.width / 2;
           const ay = r.top + r.height / 2;
           const dot = (ax - hs.x) * (fs.x - hs.x) + (ay - hs.y) * (fs.y - hs.y);
@@ -111,6 +114,10 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
             want: String(Math.abs(dx) + Math.abs(dy)),
           };
         });
+        if (!sample) {
+          await page.waitForTimeout(150);
+          continue;
+        }
         if (sample.cos > bestCos) {
           bestCos = sample.cos;
           dist = sample.dist;
