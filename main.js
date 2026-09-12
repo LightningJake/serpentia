@@ -874,6 +874,27 @@
       snapHeadVisual();
     }
   }
+  // Relative turning: the snake always moves forward; ←/A turns to ITS left,
+  // →/D to its right (screen coords: y grows downwards).
+  // Double-turn U-turns are safe by geometry — no suicide guard needed here.
+  function queueTurn(side) {
+    var last = queue.length ? queue[queue.length - 1] : dir;
+    var nx = side < 0 ? last.y : -last.y;
+    var ny = side < 0 ? -last.x : last.x;
+    queueDirection(nx, ny);
+  }
+  // ↑/↓/W/S do nothing by design; teach once, then stay silent.
+  var seenKeys = false;
+  function deadKeyHint() {
+    if (!seenKeys) {
+      seenKeys = true;
+      try {
+        store.set('snake3d.seenKeys', '1');
+      } catch (e) {}
+      toast(t('keys_hint'));
+      announce(t('keys_hint'));
+    }
+  }
   // RESPONSIVE: rotate head instantly on input so turns feel immediate,
   // even though the grid step happens on the next fixed tick.
   function snapHeadVisual() {
@@ -1077,10 +1098,8 @@
   }
   function steer(d) {
     audio();
-    if (d === 'up') viewSteer(0, -1);
-    else if (d === 'down') viewSteer(0, 1);
-    else if (d === 'left') viewSteer(-1, 0);
-    else viewSteer(1, 0);
+    if (d === 'left') queueTurn(-1);
+    else if (d === 'right') queueTurn(1);
   }
   // Camera-relative steering: W/arrows-up/swipe-up/D-pad-up always mean
   // "screen up" (away from the camera), no matter how the camera orbited.
@@ -1313,15 +1332,19 @@
       });
     })(dpadBtns[di]);
   }
-  var KEYMAP = {
-    ArrowUp: [0, -1],
-    KeyW: [0, -1],
-    ArrowDown: [0, 1],
-    KeyS: [0, 1],
-    ArrowLeft: [-1, 0],
-    KeyA: [-1, 0],
-    ArrowRight: [1, 0],
-    KeyD: [1, 0],
+  // ←/→/A/D turn the snake (it always moves forward); ↑/↓/W/S teach once.
+  // Swipe stays screen-absolute via viewSteer (a swipe IS a direction).
+  var TURNMAP = {
+    ArrowLeft: -1,
+    KeyA: -1,
+    ArrowRight: 1,
+    KeyD: 1,
+  };
+  var DEADKEYS = {
+    ArrowUp: 1,
+    KeyW: 1,
+    ArrowDown: 1,
+    KeyS: 1,
   };
   window.addEventListener('keydown', function (e) {
     var tag = (e.target && e.target.tagName) || '';
@@ -1373,10 +1396,16 @@
     // Focused buttons activate natively (single click via onTap fallback).
     // Swallowing them here would double-fire (native + global).
     if (tag === 'BUTTON') return;
-    if (KEYMAP[e.code]) {
+    if (TURNMAP[e.code]) {
       e.preventDefault();
       audio();
-      viewSteer(KEYMAP[e.code][0], KEYMAP[e.code][1]);
+      queueTurn(TURNMAP[e.code]);
+      return;
+    }
+    if (DEADKEYS[e.code]) {
+      e.preventDefault();
+      audio();
+      deadKeyHint();
       return;
     }
     if (e.code === 'Space' || e.code === 'KeyP') {
@@ -2340,6 +2369,9 @@
   applyDpad();
   applyI18n();
   seenTut = store.get('snake3d.seen') === '1';
+  try {
+    seenKeys = store.get('snake3d.seenKeys') === '1';
+  } catch (e) {}
   var ok3d = false;
   try {
     ok3d = initThree();

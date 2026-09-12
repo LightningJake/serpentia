@@ -511,16 +511,16 @@ kbd {
   bottom: 14px;
   z-index: 7;
   display: none;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  gap: 6px;
-  opacity: 0.85;
+  gap: 10px;
+  opacity: 0.9;
 }
 #dpad button {
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
-  font-size: 18px;
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  font-size: 24px;
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--line);

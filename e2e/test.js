@@ -166,20 +166,30 @@ async function newPage(browser, blockCDN) {
     await page.locator('#btn-close-help').click();
     check('btn-close-help: closes modal', await page.locator('#help-modal').isHidden());
 
-    // Keyboard steering: queue ArrowUp while heading right (paused: fully deterministic)
+    // Keyboard steering: queue ArrowLeft turn while heading right (paused: fully deterministic)
     await page.evaluate(() => {
       window.__game.start();
       window.__game.pause();
     });
-    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('ArrowLeft');
     const q = await page.evaluate(() => window.__game.queue);
     const d = await page.evaluate(() => window.__game.dir);
     check(
-      'keyboard ArrowUp: turn queued/applied',
-      (q.length && q[0].y === -1) || d.y === -1,
+      'keyboard ArrowLeft: relative turn queued/applied',
+      (q.length && q[0].x === 0 && q[0].y === -1) || d.y === -1,
       JSON.stringify({ q, d })
     );
     await page.evaluate(() => window.__game.pause()); // resume for the tests below
+
+    // Dead keys teach once: ↑ shows the hint and records it
+    await page.keyboard.press('ArrowUp');
+    await page.waitForTimeout(150);
+    check(
+      'keyboard: dead key teaches once',
+      (await page.locator('#toast.show').count()) >= 1 &&
+        /← →/.test((await page.locator('#toast').textContent()) || '') &&
+        (await page.evaluate(() => localStorage.getItem('snake3d.seenKeys'))) === '1'
+    );
 
     // Space pause/resume, Enter restart
     await page.keyboard.press('Space');
@@ -203,33 +213,33 @@ async function newPage(browser, blockCDN) {
     check('keyboard: focused Pause + Space pauses once', (await g(page, 'state')) === 'paused');
     await page.evaluate(() => window.__game.pause()); // resume for the tests below
 
-    // Camera-relative WASD: flipped camera -> W means grid-down
+    // Relative turns ignore the camera: flipped or not, Left always turns snake-left
     // (wait a beat first: camera.position eases onto the new orbit)
     await page.evaluate(() => {
       window.__game.start();
       window.__game.setCam(Math.PI, 0.95);
     });
     await page.waitForTimeout(300);
-    await page.keyboard.press('KeyW');
+    await page.keyboard.press('ArrowLeft');
     await page.waitForTimeout(400);
     const flipDir = await page.evaluate(() => window.__game.dir);
     check(
-      'camera-relative: flipped cam W -> grid down',
-      flipDir.x === 0 && flipDir.y === 1,
+      'relative: flipped cam Left still turns snake-left',
+      flipDir.x === 0 && flipDir.y === -1,
       JSON.stringify(flipDir)
     );
-    // ...and back to classic orientation -> W means grid-up
+    // ...and Right mirrors it regardless of orientation
     await page.evaluate(() => {
       window.__game.start();
       window.__game.setCam(0, 0.95);
     });
     await page.waitForTimeout(300);
-    await page.keyboard.press('KeyW');
+    await page.keyboard.press('ArrowRight');
     await page.waitForTimeout(400);
     const normDir = await page.evaluate(() => window.__game.dir);
     check(
-      'camera-relative: normal cam W -> grid up',
-      normDir.x === 0 && normDir.y === -1,
+      'relative: normal cam Right turns snake-right',
+      normDir.x === 0 && normDir.y === 1,
       JSON.stringify(normDir)
     );
 
@@ -618,10 +628,10 @@ async function newPage(browser, blockCDN) {
     check('buttons setting: dpad appears', await page.locator('#dpad').isVisible());
     await page.locator('#btn-play').click();
     await page.waitForTimeout(250);
-    await page.locator('#dpad button[data-dir="up"]').click();
+    await page.locator('#dpad button[data-dir="left"]').click();
     await page.waitForTimeout(350);
     const dDir = await page.evaluate(() => window.__game.dir);
-    check('dpad: up button steers', dDir.y === -1, JSON.stringify(dDir));
+    check('dpad: left button turns', dDir.y === -1, JSON.stringify(dDir));
     await toMenu(page);
     await page.locator('#opt-dpad').uncheck();
 

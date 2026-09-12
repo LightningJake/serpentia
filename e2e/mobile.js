@@ -116,9 +116,9 @@ const g = (page, expr) => page.evaluate(new Function('return window.__game.' + e
 
     // D-pad button steers on mobile (queue assert: deterministic while paused)
     await page.evaluate(() => window.__game.setDir(1, 0)); // head right, queue cleared
-    await page.locator('#dpad button[data-dir="up"]').tap();
+    await page.locator('#dpad button[data-dir="left"]').tap();
     const dq = await page.evaluate(() => window.__game.queue);
-    check('m-dpad: up queues', dq.length > 0 && dq[dq.length - 1].y === -1, JSON.stringify(dq));
+    check('m-dpad: left queues turn', dq.length > 0 && dq[dq.length - 1].y === -1, JSON.stringify(dq));
 
     check('m-clean: no page errors', errors.length === 0, errors.slice(0, 2).join(' | '));
     await ctx.close();
