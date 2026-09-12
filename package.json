@@ -10,7 +10,9 @@
     "test:mobile": "node e2e/mobile.js",
     "test:perf": "node e2e/perf.js",
     "test:edge": "node e2e/edge.js",
-    "test:all": "npm run test:unit && npm run test:scan && npm test && npm run test:mobile && npm run test:edge && npm run test:perf",
+    "test:resolutions": "node e2e/resolutions.js",
+    "test:live": "node e2e/live.js",
+    "test:all": "npm run test:unit && npm run test:scan && npm test && npm run test:mobile && npm run test:edge && npm run test:resolutions && npm run test:perf",
     "serve": "node serve.js",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

@@ -51,13 +51,14 @@ const g = (page, expr) => page.evaluate(new Function('return window.__game.' + e
     await page.waitForTimeout(300);
     check('m-start: tap starts game', (await g(page, 'state')) === 'playing', await g(page, 'state'));
 
-    // Tap-to-steer at a board cell right of the head
+    // Tap-to-steer at a board cell right of the head (paused + settled: deterministic)
     await page.evaluate(() => {
+      window.__game.start();
       window.__game.pause();
       window.__game.setSnake([{ x: 10, y: 10 }]);
       window.__game.setDir(0, -1);
-      window.__game.pause();
     });
+    await page.waitForTimeout(2500);
     const mode = await g(page, 'mode');
     let px, py;
     if (mode === '3d') {
@@ -70,10 +71,25 @@ const g = (page, expr) => page.evaluate(new Function('return window.__game.' + e
       px = rect.x + (v.ox + 14.5 * v.cell) / v.dpr;
       py = rect.y + (v.oy + 10.5 * v.cell) / v.dpr;
     }
-    await page.touchscreen.tap(px, py);
-    await page.waitForTimeout(500);
-    const td = await page.evaluate(() => window.__game.dir);
-    check('m-tap: touchscreen tap steers', td.x === 1 && td.y === 0, JSON.stringify(td));
+    // synthetic touch tap on canvas: bypasses overlay hit-test, exercises
+    // our own touchstart/touchend + mapping logic deterministically
+    await page.evaluate(
+      ({ x, y }) => {
+        const c = document.getElementById('scene');
+        const mk = (id) => new Touch({ identifier: id, target: c, clientX: x, clientY: y });
+        c.dispatchEvent(
+          new TouchEvent('touchstart', { touches: [mk(1)], changedTouches: [mk(1)], bubbles: true })
+        );
+        c.dispatchEvent(new TouchEvent('touchend', { touches: [], changedTouches: [mk(1)], bubbles: true }));
+      },
+      { x: px, y: py }
+    );
+    const tq = await page.evaluate(() => window.__game.queue);
+    check(
+      'm-tap: touchscreen tap queues right',
+      tq.length > 0 && tq[0].x === 1 && tq[0].y === 0,
+      JSON.stringify(tq)
+    );
 
     // Synthetic swipe right (TouchEvent constructor path).
     // Axis-aligned camera first: diagonal default ties right/up (correctly a no-op).
@@ -95,14 +111,14 @@ const g = (page, expr) => page.evaluate(new Function('return window.__game.' + e
       );
     });
     await page.waitForTimeout(500);
-    const sd = await page.evaluate(() => window.__game.dir);
-    check('m-swipe: swipe right steers', sd.x === 1 && sd.y === 0, JSON.stringify(sd));
+    const sq = await page.evaluate(() => window.__game.queue);
+    check('m-swipe: swipe right queues', sq.length > 0 && sq[0].x === 1 && sq[0].y === 0, JSON.stringify(sq));
 
-    // D-pad button steers on mobile
+    // D-pad button steers on mobile (queue assert: deterministic while paused)
+    await page.evaluate(() => window.__game.setDir(1, 0)); // head right, queue cleared
     await page.locator('#dpad button[data-dir="up"]').tap();
-    await page.waitForTimeout(500);
-    const dd = await page.evaluate(() => window.__game.dir);
-    check('m-dpad: up steers', dd.y === -1, JSON.stringify(dd));
+    const dq = await page.evaluate(() => window.__game.queue);
+    check('m-dpad: up queues', dq.length > 0 && dq[dq.length - 1].y === -1, JSON.stringify(dq));
 
     check('m-clean: no page errors', errors.length === 0, errors.slice(0, 2).join(' | '));
     await ctx.close();

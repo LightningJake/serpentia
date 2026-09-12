@@ -565,6 +565,10 @@ kbd {
   .card {
     padding: 20px 16px;
   }
+  /* toast would sit on top of the D-pad cluster down here */
+  #toast {
+    bottom: 200px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   * {

@@ -1206,6 +1206,7 @@
     else toast(t('press_start'));
   });
   onTap($('btn-help'), function () {
+    if (state === 'playing') togglePause(); // never run the game behind the docs
     $('help-modal').hidden = false;
   });
   onTap($('btn-close-help'), function () {
@@ -1223,18 +1224,6 @@
   });
   onTap($('btn-prestige'), doPrestige);
   onTap($('btn-share'), shareScore);
-  onTap($('btn-fs'), function () {
-    try {
-      if (document.fullscreenElement) {
-        if (document.exitFullscreen) document.exitFullscreen().catch(function () {});
-      } else if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen().catch(function () {
-          toast(t('fs_blocked'));
-        });
-      }
-    } catch (e) {}
-  });
-  if (!document.fullscreenEnabled && $('btn-fs')) $('btn-fs').hidden = true;
   var segBtns = document.querySelectorAll('#mode-seg button');
   for (var gi = 0; gi < segBtns.length; gi++) {
     (function (b) {
@@ -1366,11 +1355,19 @@
     }
     if (e.code === 'Space' || e.code === 'KeyP') {
       e.preventDefault();
+      if (!$('help-modal').hidden) {
+        $('help-modal').hidden = true; // dismiss docs first, game stays paused
+        return;
+      }
       if (state === 'playing' || state === 'paused') togglePause();
       else startGame();
       return;
     }
     if (e.code === 'Enter') {
+      if (!$('help-modal').hidden) {
+        $('help-modal').hidden = true;
+        return;
+      }
       if (state === 'paused')
         startGame(); // fresh run, unpaused (reset() alone would strand the pause overlay)
       else if (state !== 'playing') startGame();
@@ -2125,14 +2122,21 @@
     }
     var camSel = $('opt-cam');
     var topView = !!(camSel && camSel.value === 'top');
-    // gentle auto-zoom-out as the snake grows (yields to manual wheel zoom for 5s)
-    if (performance.now() - lastZoomAt > 5000) {
-      var wantR = Math.max(20, Math.min(38, 22 + snake.length * 0.35));
-      radius += (wantR - radius) * Math.min(1, dt * 0.8);
-    }
     var head = snake.length ? gridToWorld(snake[0].x, snake[0].y) : { x: 0, z: 0 };
+    var fw = gridToWorld(food.x, food.y);
+    // framing: keep BOTH the head and the food on screen. Target sits between
+    // them (biased to the head); radius fits their separation. This fixes the
+    // classic "food in the other corner is invisible" problem on phones.
+    var hfDist = Math.sqrt((head.x - fw.x) * (head.x - fw.x) + (head.z - fw.z) * (head.z - fw.z));
+    // gentle auto-framing (yields to manual wheel zoom for 5s)
+    if (performance.now() - lastZoomAt > 5000) {
+      var baseR = topView ? 26 : 21;
+      var wantR = Math.max(baseR, Math.min(62, baseR + hfDist * 1.4 + snake.length * 0.08));
+      radius += (wantR - radius) * Math.min(1, dt * 1.5);
+    }
     if (topView) desiredTarget.set(0, 0, 0);
-    else if ($('opt-follow').checked) desiredTarget.set(head.x * 0.45, 0, head.z * 0.45);
+    else if ($('opt-follow').checked)
+      desiredTarget.set(head.x * 0.55 + fw.x * 0.45, 0, head.z * 0.55 + fw.z * 0.45);
     else desiredTarget.set(0, 0, 0);
     camTarget.lerp(desiredTarget, Math.min(1, dt * 3));
     var sx = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
@@ -2279,6 +2283,13 @@
       var w = gridToWorld(gx, gy);
       var v = new window.THREE.Vector3(w.x, 0.5, w.z).project(camera);
       return { x: ((v.x + 1) / 2) * window.innerWidth, y: ((1 - v.y) / 2) * window.innerHeight };
+    },
+    // NDC coords of a cell: |x|,|y| <= 1 means on screen (used by resolutions suite)
+    project: function (gx, gy) {
+      if (mode !== '3d' || !window.THREE || !camera) return null;
+      var w = gridToWorld(gx, gy);
+      var v = new window.THREE.Vector3(w.x, 0.5, w.z).project(camera);
+      return { x: v.x, y: v.y, behind: v.z > 1 };
     },
     setCam: function (t, p) {
       theta = t;

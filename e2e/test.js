@@ -145,9 +145,10 @@ async function newPage(browser, blockCDN) {
       'state=' + (await g(page, 'state')) + ' score=' + (await g(page, 'score'))
     );
 
-    // Help open/close
+    // Help open/close (opening help auto-pauses the run)
     await page.locator('#btn-help').click();
     check('btn-help: opens modal', await page.locator('#help-modal').isVisible());
+    check('help: game auto-pauses behind docs', (await g(page, 'state')) === 'paused');
     for (let i = 0; i < 5; i++) await page.keyboard.press('Tab');
     check(
       'a11y: tab trapped in help dialog',
@@ -155,6 +156,12 @@ async function newPage(browser, blockCDN) {
     );
     await page.keyboard.press('Escape');
     check('a11y: Escape closes help', await page.locator('#help-modal').isHidden());
+    await page.locator('#btn-help').click();
+    await page.keyboard.press('Space');
+    check(
+      'help: Space dismisses, game stays paused',
+      (await page.locator('#help-modal').isHidden()) && (await g(page, 'state')) === 'paused'
+    );
     await page.locator('#btn-help').click();
     await page.locator('#btn-close-help').click();
     check('btn-close-help: closes modal', await page.locator('#help-modal').isHidden());
@@ -573,20 +580,37 @@ async function newPage(browser, blockCDN) {
     }
     check('biome: stars only on Space', await page.evaluate(() => !window.__stars.visible));
 
-    // Click-to-steer: click the board cell right of the head while heading up
+    // Click-to-steer: click the board cell right of the head while heading up.
+    // Paused + settled camera: fully deterministic (framing keeps easing live).
     await page.evaluate(() => {
       window.__game.start();
       window.__game.pause();
       window.__game.setSnake([{ x: 10, y: 10 }]);
       window.__game.setDir(0, -1);
-      window.__game.pause(); // resume
     });
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(2500);
     const steerPt = await page.evaluate(() => window.__game.screenFor(14, 10));
-    await page.mouse.click(steerPt.x, steerPt.y);
-    await page.waitForTimeout(450);
-    const sDir = await page.evaluate(() => window.__game.dir);
-    check('click-to-steer: board click turns snake', sDir.x === 1 && sDir.y === 0, JSON.stringify(sDir));
+    // synthetic pointer events on canvas: bypasses the pause overlay hit-test
+    // and exercises our own down/up + mapping logic deterministically
+    await page.evaluate(({ x, y }) => {
+      const c = document.getElementById('scene');
+      const init = {
+        pointerType: 'mouse',
+        button: 0,
+        clientX: x,
+        clientY: y,
+        bubbles: true,
+        cancelable: true,
+      };
+      c.dispatchEvent(new PointerEvent('pointerdown', init));
+      c.dispatchEvent(new PointerEvent('pointerup', init));
+    }, steerPt);
+    const sQueue = await page.evaluate(() => window.__game.queue);
+    check(
+      'click-to-steer: board click queues right',
+      sQueue.length > 0 && sQueue[0].x === 1 && sQueue[0].y === 0,
+      JSON.stringify(sQueue)
+    );
 
     // On-screen buttons: force-show toggle (menu) then steer in-game
     await toMenu(page);
@@ -778,13 +802,8 @@ async function newPage(browser, blockCDN) {
       .catch(() => false);
     check('pwa: engine cached for offline', cached);
 
-    // Fullscreen button present and safe to press
-    const fsHidden = await page.locator('#btn-fs').isHidden();
-    if (!fsHidden) {
-      await page.locator('#btn-fs').click();
-      await page.waitForTimeout(300);
-    }
-    check('fullscreen: button handled', true, fsHidden ? 'unsupported-hidden' : 'pressed');
+    // Fullscreen control removed by design (game plays fine windowed)
+    check('no fullscreen button', (await page.locator('#btn-fs').count()) === 0);
 
     check('no page errors in 3D session', errors.length === 0, errors.slice(0, 2).join(' | '));
     await page.close();
