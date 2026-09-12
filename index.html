@@ -316,6 +316,9 @@
               Dying at level 2+ offers <b>⭐ Prestige</b>: restart with a permanent +10% score bonus that
               stacks forever.
             </li>
+            <li data-i18n-html="h12">
+              A <b>green arrow</b> at the screen edge always points to the food, with the distance in cells.
+            </li>
           </ul>
           <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">Got it</button>
         </div>
@@ -327,6 +330,7 @@
       </div>
 
       <div id="toast" role="status"></div>
+      <div id="food-arrow" hidden aria-hidden="true"><span>▲</span><span id="food-dist">0</span></div>
       <div id="banner" aria-hidden="true"></div>
       <div id="hint" hidden data-i18n-html="hint_tut">
         👉 <b>Click the board</b> where you want to go — or use Arrows / swipe!

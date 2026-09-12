@@ -64,38 +64,60 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
       await page.waitForFunction(() => !!window.__game, null, { timeout: 25000 });
       check(d.name + ': boots', (await g(page, 'state')) === 'menu');
       await page.screenshot({ path: path.join(SHOTS, d.name + '-menu.png') });
-      // worst case framing: snake and food in opposite corners, frozen so the
-      // assertion is deterministic (camera keeps easing while paused)
+      // worst case: snake starts one corner, food the other; wrap keeps the
+      // run alive unattended. Contract: the head is always framed; the food
+      // is either framed or flagged by the edge arrow (aligned + live distance).
+      // Radius is fixed now, so one settle wait suffices — no servo to chase.
       await page.evaluate(() => {
         document.getElementById('opt-wrap').checked = true;
         window.__game.start();
-        window.__game.pause();
         window.__game.setSnake([{ x: 0, y: 0 }]);
+        window.__game.setDir(1, 0);
         window.__game.setFood(19, 19);
       });
-      // wait for the framing servo to converge, capturing the passing values
-      // atomically (a separate read afterwards could race the easing).
-      // Slow software GL needs wall-clock time; a broken camera times out.
-      const framed = await page.waitForFunction(
-        () => {
-          const h = window.__game.project(0, 0);
-          const f = window.__game.project(19, 19);
-          const ok = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1;
-          if (ok(h) && ok(f)) return { head: h, food: f };
-          return null;
-        },
-        null,
-        { timeout: 30000 }
-      );
-      const { head, food } = await framed.jsonValue();
-      check(
-        d.name + ': opposite corners framed',
-        inside(head) && inside(food),
-        JSON.stringify({ head, food })
-      );
-      await page.evaluate(() => window.__game.pause()); // resume briefly: game must run here
+      await page.waitForTimeout(1500); // follow target eases onto the head
+      const frame = await page.evaluate(() => {
+        const s = window.__game.snake[0];
+        const f = window.__game.food;
+        const h = window.__game.project(s.x, s.y);
+        const fp = window.__game.project(f.x, f.y);
+        const r = document.getElementById('food-arrow').getBoundingClientRect();
+        const hs = window.__game.screenFor(s.x, s.y);
+        // expected bearing uses the same wrap-shortest delta as the game
+        let dx = f.x - s.x,
+          dy = f.y - s.y;
+        if (document.getElementById('opt-wrap').checked) {
+          dx -= 20 * Math.round(dx / 20);
+          dy -= 20 * Math.round(dy / 20);
+        }
+        const fs = window.__game.screenFor(s.x + dx, s.y + dy);
+        const ax = r.left + r.width / 2;
+        const ay = r.top + r.height / 2;
+        const dot = (ax - hs.x) * (fs.x - hs.x) + (ay - hs.y) * (fs.y - hs.y);
+        const la = Math.hypot(ax - hs.x, ay - hs.y);
+        const lf = Math.hypot(fs.x - hs.x, fs.y - hs.y);
+        return {
+          head: h,
+          food: fp,
+          arrowShown: !document.getElementById('food-arrow').hidden,
+          cos: lf > 1 ? dot / (la * lf) : 1,
+          dist: document.getElementById('food-dist').textContent,
+          want: String(Math.abs(dx) + Math.abs(dy)),
+        };
+      });
+      const headOk = inside(frame.head);
+      const foodOk = inside(frame.food);
+      check(d.name + ': head framed', headOk, JSON.stringify(frame.head));
+      if (foodOk) {
+        check(d.name + ': food framed, arrow hidden', !frame.arrowShown);
+      } else {
+        check(
+          d.name + ': arrow flags off-screen food',
+          frame.arrowShown && frame.cos > 0.85 && frame.dist === frame.want,
+          JSON.stringify({ cos: frame.cos, dist: frame.dist, want: frame.want, food: frame.food })
+        );
+      }
       await page.waitForTimeout(600);
-      check(d.name + ': runs after framing', (await g(page, 'state')) === 'playing');
       const fps = await page.evaluate(() => window.__game.perf().fps);
       console.log('info  ' + d.name + ': fps=' + fps);
       await page.screenshot({ path: path.join(SHOTS, d.name + '-game.png') });

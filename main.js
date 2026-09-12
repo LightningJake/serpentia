@@ -60,7 +60,6 @@
   var squash = 0; // eat squash-and-stretch impulse 0..1
   var foodBornAt = 0,
     bonusBornAt = 0; // spawn-pulse timestamps
-  var lastZoomAt = 0; // user zoom recency (auto-zoom yields to it)
   var seenTut = false; // first-run tutorial hint
   var tickMs = SPEED_PRESETS.normal;
   var acc = 0,
@@ -1739,7 +1738,6 @@
       function (e) {
         e.preventDefault();
         radius = Math.max(10, Math.min(45, radius + e.deltaY * 0.02));
-        lastZoomAt = performance.now();
       },
       { passive: false }
     );
@@ -1879,6 +1877,74 @@
       p.v.set((Math.random() - 0.5) * 6, Math.random() * 5 + 2, (Math.random() - 0.5) * 6);
       if (++n >= 10) break;
     }
+  }
+  // Off-screen food arrow: the camera stays close and readable; when the food
+  // leaves the frame, an edge marker points at it with the cell distance.
+  // Wrap-aware: across an edge, it points the short way around.
+  function ndcCell(gx, gy) {
+    if (mode !== '3d' || !window.THREE || !camera) return null;
+    var w = gridToWorld(gx, gy);
+    var v = new window.THREE.Vector3(w.x, 0.5, w.z).project(camera);
+    return { x: v.x, y: v.y, behind: v.z > 1 };
+  }
+  function updateFoodArrow() {
+    var el = $('food-arrow');
+    if (!el) return;
+    if (mode !== '3d' || state !== 'playing' || !snake.length) {
+      el.hidden = true;
+      return;
+    }
+    var hs = ndcCell(snake[0].x, snake[0].y);
+    var fs = ndcCell(food.x, food.y);
+    var onScreen = function (p) {
+      return p && !p.behind && Math.abs(p.x) <= 0.92 && Math.abs(p.y) <= 0.88;
+    };
+    if (onScreen(fs)) {
+      el.hidden = true;
+      return;
+    }
+    var hw = gridToWorld(snake[0].x, snake[0].y);
+    var fw = gridToWorld(food.x, food.y);
+    var dx = fw.x - hw.x,
+      dz = fw.z - hw.z;
+    if ($('opt-wrap').checked) {
+      dx -= GRID * Math.round(dx / GRID);
+      dz -= GRID * Math.round(dz / GRID);
+    }
+    var len = Math.sqrt(dx * dx + dz * dz) || 1;
+    var b = camBasis();
+    var sx = (dx / len) * b.rx + (dz / len) * b.rz; // screen right+
+    var sy = (dx / len) * b.fx + (dz / len) * b.fz; // screen up+
+    var ang = Math.atan2(sx, sy);
+    var ax = hs && !hs.behind ? ((hs.x + 1) / 2) * window.innerWidth : window.innerWidth / 2;
+    var ay = hs && !hs.behind ? ((1 - hs.y) / 2) * window.innerHeight : window.innerHeight / 2;
+    var R = 110;
+    var px = ax + Math.sin(ang) * R,
+      py = ay - Math.cos(ang) * R;
+    // shrink the offset to fit instead of clamping: clamping skews the
+    // bearing, shrinking keeps the arrow truthful on narrow screens
+    var R2 = R;
+    for (var fit = 0; fit < 12; fit++) {
+      px = ax + Math.sin(ang) * R2;
+      py = ay - Math.cos(ang) * R2;
+      if (px >= 46 && px <= window.innerWidth - 46 && py >= 120 && py <= window.innerHeight - 190) break;
+      R2 *= 0.85;
+    }
+    px = Math.max(46, Math.min(window.innerWidth - 46, px));
+    py = Math.max(120, Math.min(window.innerHeight - 190, py));
+    var mdx = Math.abs(food.x - snake[0].x);
+    var mdz = Math.abs(food.y - snake[0].y);
+    if ($('opt-wrap').checked) {
+      mdx = Math.min(mdx, GRID - mdx);
+      mdz = Math.min(mdz, GRID - mdz);
+    }
+    el.hidden = false;
+    el.style.left = px + 'px';
+    el.style.top = py + 'px';
+    var glyph = el.firstElementChild;
+    if (glyph) glyph.style.transform = 'rotate(' + (ang * 180) / Math.PI + 'deg)';
+    var dist = $('food-dist');
+    if (dist) dist.textContent = mdx + mdz;
   }
 
   // ---------- 2D fallback + effects ----------
@@ -2183,21 +2249,16 @@
     var topView = !!(camSel && camSel.value === 'top');
     var head = snake.length ? gridToWorld(snake[0].x, snake[0].y) : { x: 0, z: 0 };
     var fw = gridToWorld(food.x, food.y);
-    // framing: keep BOTH the head and the food on screen. Target sits between
-    // them (biased to the head); radius fits their separation. This fixes the
-    // classic "food in the other corner is invisible" problem on phones.
-    var hfDist = Math.sqrt((head.x - fw.x) * (head.x - fw.x) + (head.z - fw.z) * (head.z - fw.z));
-    // gentle auto-framing (yields to manual wheel zoom for 5s)
-    if (performance.now() - lastZoomAt > 5000) {
-      var baseR = topView ? 26 : 21;
-      var wantR = Math.max(baseR, Math.min(62, baseR + hfDist * 1.4 + snake.length * 0.08));
-      radius += (wantR - radius) * Math.min(1, cdt * 1.5);
-    }
+    // fixed comfortable framing: the camera NEVER auto-zooms (that bounce on
+    // every eat was the #1 feel complaint). It follows the head with a slight
+    // lookahead toward the food; far food is signalled by the edge arrow, and
+    // the user owns the radius via wheel / pinch.
     if (topView) desiredTarget.set(0, 0, 0);
     else if ($('opt-follow').checked)
-      desiredTarget.set(head.x * 0.55 + fw.x * 0.45, 0, head.z * 0.55 + fw.z * 0.45);
+      desiredTarget.set(head.x * 0.85 + fw.x * 0.15, 0, head.z * 0.85 + fw.z * 0.15);
     else desiredTarget.set(0, 0, 0);
     camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
+    updateFoodArrow(); // edge marker when the food is off-screen (3D playing only)
     var sx = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     var sy = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     if (shake > 0) shake = Math.max(0, shake - dt * 1.4);

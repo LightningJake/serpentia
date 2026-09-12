@@ -72,6 +72,7 @@ async function newPage(browser, blockCDN) {
         ((await page.locator('.controls-grid kbd').count()) || 0) >= 4
     );
     check('loader: hidden after boot', await page.locator('#loader').isHidden());
+    check('arrow: hidden in menu', await page.locator('#food-arrow').isHidden());
     check(
       'loader: staged progress available',
       (await page.evaluate(() => typeof window.__loadStep)) === 'function'
@@ -145,7 +146,11 @@ async function newPage(browser, blockCDN) {
       'state=' + (await g(page, 'state')) + ' score=' + (await g(page, 'score'))
     );
 
-    // Help open/close (opening help auto-pauses the run)
+    // Help open/close (opening help auto-pauses the run).
+    // Wrap on: the snake must not wall-die unattended mid-block.
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+    });
     await page.locator('#btn-help').click();
     check('btn-help: opens modal', await page.locator('#help-modal').isVisible());
     check('help: game auto-pauses behind docs', (await g(page, 'state')) === 'paused');
@@ -165,6 +170,9 @@ async function newPage(browser, blockCDN) {
     await page.locator('#btn-help').click();
     await page.locator('#btn-close-help').click();
     check('btn-close-help: closes modal', await page.locator('#help-modal').isHidden());
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = false;
+    });
 
     // Keyboard steering: queue ArrowLeft turn while heading right (paused: fully deterministic)
     await page.evaluate(() => {
@@ -622,6 +630,83 @@ async function newPage(browser, blockCDN) {
       JSON.stringify(sQueue)
     );
 
+    // Food arrow: hidden when food visible, shown with bearing + distance when far.
+    // Live windows (radius is fixed now, so targeting is stable tick to tick).
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = false;
+      window.__game.setSnake([{ x: 0, y: 0 }]);
+      window.__game.setDir(0, 1);
+      window.__game.setFood(1, 0);
+      window.__game.pause(); // resume -> playing
+    });
+    await page.waitForTimeout(400);
+    check('arrow: hidden when food visible', await page.locator('#food-arrow').isHidden());
+    await page.evaluate(() => window.__game.setFood(19, 19));
+    await page.waitForTimeout(400);
+    check('arrow: shown when food far', await page.locator('#food-arrow').isVisible());
+    const geom = await page.evaluate(() => {
+      const r = document.getElementById('food-arrow').getBoundingClientRect();
+      const s = window.__game.snake[0];
+      const f = window.__game.food;
+      const h = window.__game.screenFor(s.x, s.y);
+      const fp = window.__game.screenFor(f.x, f.y);
+      const ax = r.left + r.width / 2;
+      const ay = r.top + r.height / 2;
+      const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
+      const la = Math.hypot(ax - h.x, ay - h.y);
+      const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
+      return {
+        cos: dot / (la * lf),
+        dist: document.getElementById('food-dist').textContent,
+        want: String(Math.abs(f.x - s.x) + Math.abs(f.y - s.y)),
+      };
+    });
+    check(
+      'arrow: points at food with live distance',
+      geom.cos > 0.85 && geom.dist === geom.want,
+      JSON.stringify(geom)
+    );
+    // Wrap-aware: food across the edge points the short way around
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      window.__game.setSnake([{ x: 0, y: 10 }]);
+      window.__game.setDir(0, 1);
+      window.__game.setFood(19, 10);
+    });
+    await page.waitForTimeout(400);
+    const wgeom = await page.evaluate(() => {
+      const r = document.getElementById('food-arrow').getBoundingClientRect();
+      const s = window.__game.snake[0];
+      const f = window.__game.food;
+      let dx = f.x - s.x,
+        dy = f.y - s.y;
+      dx -= 20 * Math.round(dx / 20);
+      dy -= 20 * Math.round(dy / 20);
+      const h = window.__game.screenFor(s.x, s.y);
+      const fp = window.__game.screenFor(s.x + dx, s.y + dy);
+      const ax = r.left + r.width / 2;
+      const ay = r.top + r.height / 2;
+      const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
+      const la = Math.hypot(ax - h.x, ay - h.y);
+      const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
+      return {
+        cos: lf > 1 ? dot / (la * lf) : 1,
+        dist: document.getElementById('food-dist').textContent,
+        want: String(Math.abs(dx) + Math.abs(dy)),
+      };
+    });
+    check(
+      'arrow: wrap shortest-path bearing',
+      wgeom.cos > 0.85 && wgeom.dist === wgeom.want,
+      JSON.stringify(wgeom)
+    );
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = false;
+      window.__game.pause();
+    });
+    await page.waitForTimeout(150);
+    check('arrow: hidden when paused', await page.locator('#food-arrow').isHidden());
+
     // On-screen buttons: force-show toggle (menu) then steer in-game
     await toMenu(page);
     await page.locator('#opt-dpad').check();
@@ -753,6 +838,7 @@ async function newPage(browser, blockCDN) {
       timeout: 6000,
     });
     check('share: row visible on game over', await page.locator('#share-row').isVisible());
+    check('arrow: hidden on game over', await page.locator('#food-arrow').isHidden());
     await page.evaluate(() => {
       window.__shared = null;
       try {
@@ -917,6 +1003,7 @@ async function newPage(browser, blockCDN) {
     });
     const nOb = await page2.evaluate(() => window.__game.obstacles.length);
     check('2D: obstacles spawn', nOb > 0, 'n=' + nOb);
+    check('2D: no food arrow (whole board visible)', await page2.locator('#food-arrow').isHidden());
     // 2D tap-to-steer via the same click path
     await page2.evaluate(() => {
       window.__game.start();
