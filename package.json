@@ -1,0 +1,28 @@
+{
+  "name": "opencode",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "test": "node e2e/test.js",
+    "test:unit": "node test/unit.js",
+    "test:scan": "node test/scan.js",
+    "test:mobile": "node e2e/mobile.js",
+    "test:perf": "node e2e/perf.js",
+    "test:edge": "node e2e/edge.js",
+    "test:all": "npm run test:unit && npm run test:scan && npm test && npm run test:mobile && npm run test:edge && npm run test:perf",
+    "serve": "node serve.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.6"
+  }
+}

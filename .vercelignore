@@ -1,0 +1,5 @@
+# Deployed to Vercel as a pure static site: ship only what browsers need.
+node_modules
+e2e
+test
+.github

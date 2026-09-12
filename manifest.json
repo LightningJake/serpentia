@@ -1,0 +1,19 @@
+{
+  "name": "3D Snake",
+  "short_name": "Snake3D",
+  "description": "A 3D snake game for the browser (with 2D fallback).",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#070b18",
+  "theme_color": "#070b18",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

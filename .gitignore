@@ -1,0 +1,9 @@
+# dependencies (rebuilt by Vercel/CI via npm ci)
+node_modules/
+# local tooling / logs
+.vercel/
+*.log
+.DS_Store
+Thumbs.db
+# scratch
+C:\Users\JAIMEE~1\AppData\Local\Temp\opencode

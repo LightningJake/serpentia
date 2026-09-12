@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>3D Snake — Three.js</title>
+    <meta name="theme-color" content="#070b18" />
+    <meta name="description" content="A 3D snake game for the browser (with 2D fallback)." />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="stylesheet" href="style.css" />
+    <!-- Pinned UMD builds (SRI) work over file:// AND http. Two-CDN fallback chain. -->
+    <script
+      src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.149.0/three.min.js"
+      integrity="sha384-RRHfJ6w1mTlKUBMYT/hvnRiOzEB/vyRV3DrQOseb6oYfvaZSfdd0byS4bHps0k2R"
+      crossorigin="anonymous"
+    ></script>
+    <script>
+      if (!window.THREE)
+        document.write(
+          '<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js" integrity="sha384-RRHfJ6w1mTlKUBMYT/hvnRiOzEB/vyRV3DrQOseb6oYfvaZSfdd0byS4bHps0k2R" crossorigin="anonymous"><\/script>'
+        );
+      window.__loadStep = function (key) {
+        try {
+          var el = document.getElementById('loader-text');
+          if (!el) return;
+          var nav = (navigator.language || 'en').slice(0, 2).toLowerCase();
+          var D = window.I18N || {};
+          var dict = D[nav] || D.en;
+          if (dict && dict[key]) el.textContent = dict[key];
+        } catch (e) {}
+      };
+      window.__loadStep('load_s1');
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <div id="loader" role="status" aria-label="Loading">
+        <div class="spin" aria-hidden="true"></div>
+        <p id="loader-text" data-i18n="loading">Loading 3D engine…</p>
+      </div>
+      <canvas id="scene" aria-label="3D snake game board"></canvas>
+
+      <header id="hud" aria-live="polite">
+        <div class="hud-left">
+          <div class="logo">🐍 3D SNAKE</div>
+          <div class="stats">
+            <span class="pill" title="Current score"
+              ><span data-i18n="pill_score">Score</span> <b id="score">0</b></span
+            >
+            <span class="pill" title="Best score on this browser"
+              ><span data-i18n="pill_best">Best</span> <b id="best">0</b></span
+            >
+            <span class="pill" title="Current speed level" id="pill-level"
+              ><span data-i18n="pill_level">Level</span> <b id="level">1</b></span
+            >
+            <span class="pill" title="Snake length" id="pill-length"
+              ><span data-i18n="pill_length">Length</span> <b id="length">3</b></span
+            >
+            <span class="pill" title="Foods to next level" id="pill-goal"
+              ><span data-i18n="pill_goal">Goal</span> <b id="goal">0/6</b></span
+            >
+            <span class="pill combo" id="pill-combo" hidden title="Eat quickly to chain combos"
+              ><span data-i18n="pill_combo">Combo</span> <b id="combo">x1</b></span
+            >
+          </div>
+        </div>
+        <div class="hud-right">
+          <button id="btn-pause" class="btn" title="Pause / resume (Space or P)" data-i18n="btn_pause">
+            ⏸ Pause
+          </button>
+          <button id="btn-restart" class="btn" title="Restart (Enter)" data-i18n="btn_restart">
+            ↻ Restart
+          </button>
+          <button id="btn-fs" class="btn ghost" title="Fullscreen">⛶</button>
+          <button id="btn-help" class="btn ghost" title="How to play">?</button>
+        </div>
+      </header>
+
+      <div id="overlay">
+        <div class="card" role="dialog" aria-modal="true">
+          <h1 id="ov-title">🐍 3D Snake</h1>
+          <div class="best-hero">🏆 <span data-i18n="best_word">BEST</span>&nbsp;<b id="ov-best">0</b></div>
+          <div class="life-line" id="life-line"></div>
+          <p id="ov-sub">Eat the orbs. Don't hit walls or yourself.</p>
+          <div id="ov-stats"></div>
+          <div id="settings-panel">
+            <div class="set-group">
+              <h4 data-i18n="sec_mode">Mode</h4>
+              <div class="seg" id="mode-seg" role="radiogroup" aria-label="Game mode">
+                <button
+                  type="button"
+                  data-mode="classic"
+                  data-i18n="mode_classic"
+                  title="Solid walls, no obstacles"
+                >
+                  Classic
+                </button>
+                <button type="button" data-mode="wrap" data-i18n="mode_wrap" title="Pass through walls">
+                  Wrap
+                </button>
+                <button
+                  type="button"
+                  data-mode="obstacles"
+                  data-i18n="mode_obstacles"
+                  title="Deadly obstacles appear"
+                >
+                  Obstacles
+                </button>
+              </div>
+            </div>
+            <div class="set-group">
+              <h4 data-i18n="sec_game">Game</h4>
+              <div class="set-items">
+                <label class="select"
+                  ><span data-i18n="set_speed">Speed</span>
+                  <select id="opt-speed">
+                    <option value="slow" data-i18n="set_slow">Slow</option>
+                    <option value="normal" selected data-i18n="set_normal">Normal</option>
+                    <option value="fast" data-i18n="set_fast">Fast</option>
+                  </select>
+                </label>
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-kid" /> <span data-i18n="set_kid">🧒 Kid mode</span></label
+                >
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-wrap" /> <span data-i18n="set_wrap">Wrap walls</span></label
+                >
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-obstacles" />
+                  <span data-i18n="set_obstacles">Obstacles</span></label
+                >
+              </div>
+            </div>
+            <div class="set-group">
+              <h4 data-i18n="sec_look">Look &amp; feel</h4>
+              <div class="set-items">
+                <label class="select"
+                  ><span data-i18n="set_cam">Camera</span>
+                  <select id="opt-cam">
+                    <option value="follow" selected data-i18n="set_cam_follow">Follow</option>
+                    <option value="top" data-i18n="set_cam_top">Top-down</option>
+                  </select>
+                </label>
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-follow" checked />
+                  <span data-i18n="set_follow">Follow cam</span></label
+                >
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-shadows" checked />
+                  <span data-i18n="set_shadows">Shadows</span></label
+                >
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-colorblind" />
+                  <span data-i18n="set_cb">Colorblind-safe</span></label
+                >
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-dpad" /> <span data-i18n="set_buttons">Buttons</span></label
+                >
+              </div>
+            </div>
+            <div class="set-group">
+              <h4 data-i18n="sec_sound">Sound</h4>
+              <div class="set-items">
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-sound" checked />
+                  <span data-i18n="set_sound">Sound</span></label
+                >
+                <label class="toggle"
+                  ><input type="checkbox" id="opt-music" checked />
+                  <span data-i18n="set_music">Music</span></label
+                >
+              </div>
+            </div>
+            <div class="set-group">
+              <h4 data-i18n="sec_controls">Controls</h4>
+              <div class="set-items">
+                <label class="select"
+                  ><span data-i18n="set_swipe">Swipe</span>
+                  <select id="opt-swipe">
+                    <option value="calm" data-i18n="set_swipe_calm">Calm</option>
+                    <option value="normal" selected data-i18n="set_swipe_normal">Normal</option>
+                    <option value="twitchy" data-i18n="set_swipe_twitchy">Twitchy</option>
+                  </select>
+                </label>
+                <label class="select"
+                  ><span data-i18n="set_lang">Language</span>
+                  <select id="opt-lang">
+                    <option value="auto" selected>🌐 Auto</option>
+                    <option value="en">English</option>
+                    <option value="es">Español</option>
+                    <option value="fr">Français</option>
+                    <option value="de">Deutsch</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="controls-grid" aria-label="How to steer">
+            <div>
+              🖱️
+              <span
+                ><b data-i18n="ctl_click_b">Click the board</b>
+                <span data-i18n="ctl_click_rest">where to go</span></span
+              >
+            </div>
+            <div>
+              ⌨️
+              <span
+                ><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd>
+                <span data-i18n="ctl_wasd">follows the camera</span></span
+              >
+            </div>
+            <div>📱 <span data-i18n="ctl_touch">Swipe or on-screen buttons</span></div>
+          </div>
+          <div class="row" id="play-row">
+            <button id="btn-play" class="btn primary">▶ Start game</button>
+          </div>
+          <div class="row" id="pause-menu" hidden>
+            <button id="btn-resume" class="btn primary" data-i18n="btn_resume">▶ Resume</button>
+            <button id="btn-restart2" class="btn" data-i18n="btn_restart">↻ Restart</button>
+            <button id="btn-quit" class="btn ghost" data-i18n="btn_menu">Menu</button>
+          </div>
+          <p class="hint" id="pause-note" hidden data-i18n="pause_note">
+            Tip: all settings live in the main menu.
+          </p>
+          <div class="row" id="share-row" hidden>
+            <button id="btn-share" class="btn" data-i18n="btn_share">📤 Share score</button>
+          </div>
+          <div class="row" id="prestige-row" hidden>
+            <button id="btn-prestige" class="btn primary" data-i18n="prestige_btn">⭐ Prestige +10%</button>
+          </div>
+          <p class="hint">
+            <span data-i18n="hint_goal">6 foods per level, new arena each level</span> &nbsp;•&nbsp;
+            <span data-i18n="hint_keys">Pause: Space • Restart: Enter • Drag to orbit • Wheel to zoom</span>
+          </p>
+        </div>
+      </div>
+
+      <div id="help-modal" hidden>
+        <div class="card">
+          <h2 data-i18n="help_title">How to play & edge cases</h2>
+          <ul>
+            <li data-i18n-html="h1">
+              <b>Easiest:</b> click or tap the board where you want the snake to go.
+            </li>
+            <li data-i18n-html="h2">
+              Keyboard (Arrows / WASD), swipe, or the on-screen buttons work too —
+              <b>WASD follows the camera</b>, so W is always "up on screen". Turn on <b>Buttons</b> in
+              settings to always show them.
+            </li>
+            <li data-i18n-html="h3">Eat glowing orbs to grow and score. Speed increases each 4 foods.</li>
+            <li data-i18n-html="h4">
+              Chain eats within 5s for a <b>combo multiplier</b> (up to x5). Pink <b>bonus orbs</b> are worth
+              50 × combo — grab them fast!
+            </li>
+            <li data-i18n-html="h5">Solid walls kill — or enable <b>Wrap walls</b> to pass through.</li>
+            <li data-i18n-html="h6">
+              Every 6 foods you level up — and in <b>Obstacles</b> mode each level adds deadly blocks. Each
+              level brings a new arena: 🌱 Meadow → 🏜️ Desert → 🌊 Ocean → 🌋 Volcano → 🌌 Space → 🌲 Forest →
+              🌅 Sunset → ❄️ Ice.
+            </li>
+            <li data-i18n-html="h7">
+              Pick a mode above: <b>Classic</b> walls kill, <b>Wrap</b> passes through, <b>Obstacles</b> adds
+              hazards.
+            </li>
+            <li data-i18n-html="h8">
+              Quick opposite turns are ignored so you can't instant-suicide by double-tap.
+            </li>
+            <li data-i18n-html="h9">Game auto-pauses when the tab hides or window blurs.</li>
+            <li data-i18n-html="h10">Fill the whole 20×20 board to win (400 segments).</li>
+            <li data-i18n-html="h11">
+              Dying at level 2+ offers <b>⭐ Prestige</b>: restart with a permanent +10% score bonus that
+              stacks forever.
+            </li>
+          </ul>
+          <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">Got it</button>
+        </div>
+      </div>
+
+      <div id="dpad" aria-label="Touch controls">
+        <button data-dir="up" aria-label="Up">▲</button>
+        <div>
+          <button data-dir="left" aria-label="Left">◀</button>
+          <button data-dir="down" aria-label="Down">▼</button>
+          <button data-dir="right" aria-label="Right">▶</button>
+        </div>
+      </div>
+
+      <div id="toast" role="status"></div>
+      <div id="banner" aria-hidden="true"></div>
+      <div id="hint" hidden data-i18n-html="hint_tut">
+        👉 <b>Click the board</b> where you want to go — or use Arrows / swipe!
+      </div>
+      <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
+      <div id="flash" aria-hidden="true"></div>
+      <div id="nogl" hidden>
+        <div class="card">
+          <h2 data-i18n="nogl_t">3D unavailable — 2D fallback active</h2>
+          <p data-i18n="nogl_b">
+            The 3D engine could not load (offline or blocked WebGL). The game still plays in 2D mode.
+          </p>
+        </div>
+      </div>
+    </div>
+    <noscript><p style="padding: 2rem">This game needs JavaScript.</p></noscript>
+    <script>
+      window.addEventListener(
+        'error',
+        function (e) {
+          var t = document.getElementById('toast');
+          if (t && e && e.message) {
+            t.textContent = 'Error: ' + e.message;
+            t.classList.add('show');
+          }
+        },
+        true
+      );
+    </script>
+    <script>
+      if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('sw.js').catch(function () {});
+        });
+      }
+    </script>
+    <script src="logic.js"></script>
+    <script>
+      window.__loadStep && window.__loadStep('load_s2');
+    </script>
+    <script src="i18n.js"></script>
+    <script>
+      window.__loadStep && window.__loadStep('load_s3');
+    </script>
+    <script src="main.js"></script>
+  </body>
+</html>
