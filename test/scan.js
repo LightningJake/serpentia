@@ -163,5 +163,15 @@ const levelCount = (levelsRegion.match(/\bname\s*:/g) || []).length;
 if (musicCount !== levelCount) bad('music voices', musicCount + ' voices for ' + levelCount + ' biomes');
 else good('music voices (' + musicCount + ' biomes)');
 
+// ---- 15. every biome has a food tint + wall style
+const tintRegion = main.slice(main.indexOf('var FOOD_TINT = ['), main.indexOf('var WALL_STYLE'));
+const tintCount = (tintRegion.match(/\bcss: '#[0-9a-f]+'/g) || []).length;
+const wallRegion = main.slice(main.indexOf('var WALL_STYLE = ['), main.indexOf('var AMBIENT'));
+const wallCount = (wallRegion.match(/'(slab|crystal|obsidian)'/g) || []).length;
+if (tintCount !== levelCount) bad('food tints', tintCount + ' tints for ' + levelCount + ' biomes');
+else good('food tints (' + tintCount + ' biomes)');
+if (wallCount !== levelCount) bad('wall styles', wallCount + ' styles for ' + levelCount + ' biomes');
+else good('wall styles (' + wallCount + ' biomes)');
+
 console.log('\n==== scan: ' + (fails ? 'FAILURES' : 'all clean') + ' ====');
 process.exit(fails ? 1 : 0);

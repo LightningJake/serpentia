@@ -92,6 +92,45 @@
     var s = Math.max(0, Math.floor(ms / 1000));
     return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
   }
+  // Quadrant-mirrored obstacle layout: base cells in one quadrant mirrored
+  // across both axes, deduped (center-crossing cells) and sorted for
+  // deterministic order. Same input -> same fair, symmetric map.
+  function mirrorLayout(base, n) {
+    var out = [],
+      seen = {};
+    for (var i = 0; i < base.length; i++) {
+      var x = base[i][0],
+        y = base[i][1];
+      var pts = [
+        [x, y],
+        [n - 1 - x, y],
+        [x, n - 1 - y],
+        [n - 1 - x, n - 1 - y],
+      ];
+      for (var j = 0; j < pts.length; j++) {
+        var px = pts[j][0],
+          py = pts[j][1];
+        if (px < 0 || px >= n || py < 0 || py >= n) continue;
+        var k = px + py * n;
+        if (!seen[k]) {
+          seen[k] = true;
+          out.push({ x: px, y: py });
+        }
+      }
+    }
+    out.sort(function (a, b) {
+      return a.y * n + a.x - (b.y * n + b.x);
+    });
+    return out;
+  }
+  // Ice slide: turns take effect one cell later (momentum pipeline).
+  // pending = turn stashed last tick; it applies before any queued turn
+  // (FIFO: pending was queue[0] when stashed). Pure per-tick transition.
+  function slideDir(queue, pending, dir) {
+    if (pending) return { dir: pending, pending: null, queue: queue };
+    if (queue.length) return { dir: dir, pending: queue[0], queue: queue.slice(1) };
+    return { dir: dir, pending: null, queue: queue };
+  }
 
   return {
     nextPos: nextPos,
@@ -106,6 +145,8 @@
     findFree: findFree,
     manhattan: manhattan,
     mulberry32: mulberry32,
+    mirrorLayout: mirrorLayout,
+    slideDir: slideDir,
     fmtTime: fmtTime,
   };
 });

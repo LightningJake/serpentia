@@ -93,4 +93,54 @@ eq(
   'findFree deterministic under seeded rng'
 );
 
+// mirrorLayout: quadrant symmetry, dedupe, sorted, bounded
+var ml = L.mirrorLayout(
+  [
+    [2, 2],
+    [3, 6],
+  ],
+  20
+);
+eq(ml.length, 8, 'mirrorLayout 2 base cells -> 8 cells');
+eq(
+  ml.every(function (c) {
+    function has(x, y) {
+      return ml.some(function (k) {
+        return k.x === x && k.y === y;
+      });
+    }
+    return has(19 - c.x, c.y) && has(c.x, 19 - c.y) && has(19 - c.x, 19 - c.y);
+  }),
+  true,
+  'mirrorLayout every cell has all 3 mirrors'
+);
+var mlSorted = ml.every(function (c, i) {
+  return i === 0 || ml[i - 1].y * 20 + ml[i - 1].x <= c.y * 20 + c.x;
+});
+eq(mlSorted, true, 'mirrorLayout sorted row-major');
+var mlEdge = L.mirrorLayout([[0, 0]], 20);
+eq(mlEdge.length, 4, 'mirrorLayout corner -> 4 distinct cells');
+var mlDedupe = L.mirrorLayout([[9, 9]], 20);
+eq(mlDedupe.length, 4, 'mirrorLayout near-center dedupes to 4');
+eq(
+  L.mirrorLayout([[25, 25]], 20),
+  [],
+  'mirrorLayout drops out-of-bounds base cells'
+);
+
+// slideDir: ice momentum pipeline
+var R = { x: 1, y: 0 },
+  U = { x: 0, y: -1 },
+  Ld = { x: -1, y: 0 };
+var s1 = L.slideDir([Ld], null, R);
+eq(s1, { dir: R, pending: Ld, queue: [] }, 'slideDir stashes turn, moves straight');
+var s2 = L.slideDir(s1.queue, s1.pending, s1.dir);
+eq(s2, { dir: Ld, pending: null, queue: [] }, 'slideDir applies stashed turn next tick');
+var s3 = L.slideDir([Ld, U], null, R);
+eq(s3.queue, [U], 'slideDir FIFO: only head stashed');
+var s4 = L.slideDir(s3.queue, s3.pending, s3.dir);
+eq(s4, { dir: Ld, pending: null, queue: [U] }, 'slideDir pending wins over queued');
+var s5 = L.slideDir([], null, R);
+eq(s5, { dir: R, pending: null, queue: [] }, 'slideDir empty is identity');
+
 console.log('\n==== unit: ' + (process.exitCode ? 'FAILURES' : n + '/' + n + ' passed') + ' ====');

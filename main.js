@@ -19,6 +19,11 @@
   var BONUS_EVERY = 5; // spawn a bonus every N regular foods
   var SHIELD_TTL = 9000; // shield pickup lifetime (ms of play time)
   var SHIELD_EVERY = 7; // spawn a shield every N regular foods
+  var DESERT_FOOD_TTL = 20000; // desert rule: uneaten food withers after 20s
+  var EMBER_WARN = 2000; // volcano rule: ember telegraphs this long before igniting
+  var EMBER_BURN = 3000; // volcano rule: ignited ember stays lethal this long
+  var EMBER_EVERY = 5000; // volcano rule: new ember cadence while playing
+  var EMBER_MAX = 3; // volcano rule: max concurrent embers
   var COMBO_WINDOW = 5000; // eats within this gap chain the combo
   var FOODS_PER_LEVEL = 6; // goal: foods per level
   var OBSTACLE_START = 4; // rocks on a fresh obstacles run
@@ -55,6 +60,12 @@
   var shield = null,
     shieldLeft = 0,
     hasShield = false; // shield pickup {x,y} + TTL; hasShield = charge held
+  var slideHeld = null; // ice rule: turn stashed one tick (momentum pipeline)
+  var embers = []; // volcano rule: [{x, y, born}] telegraph -> burn -> gone
+  var emberAcc = 0,
+    emberToastShown = false; // volcano spawn cadence + first-sight hint
+  var runLayout = null; // obstacle variant picked per run {base, transpose, scatter}
+  var warnPulses = []; // obstacle telegraphs [{x, y, until}]
   // Seeded runs (?seed=): gameplay spawns draw from rng() instead of
   // Math.random so a shared link replays identical maps. Visual-only
   // randomness (particles, decor, textures) stays unseeded on purpose.
@@ -363,13 +374,13 @@
     {
       id: 'abyss',
       ach: 'level3',
-      head: 0x9d4edd,
-      headEm: 0x2a0a4a,
-      bodyA: 0x7b2cbf,
-      bodyAEm: 0x1c0533,
-      bodyB: 0x3c096c,
-      bodyBEm: 0x0d0221,
-      css: { head: '#9d4edd', body: ['#7b2cbf', '#3c096c'] },
+      head: 0xc77dff,
+      headEm: 0x3a0a5a,
+      bodyA: 0x9d4edd,
+      bodyAEm: 0x2a0a4a,
+      bodyB: 0xe0aaff,
+      bodyBEm: 0x4a2a6a,
+      css: { head: '#c77dff', body: ['#9d4edd', '#e0aaff'] },
     },
     {
       id: 'ember',
@@ -498,6 +509,7 @@
     if (window.__trailMat) window.__trailMat.color.setHex(p.head);
     if (window.__headLight) window.__headLight.color.setHex(p.head);
     applySkin(); // skins override the snake mats (classic = palette, no-op)
+    applyFoodTint(); // food keeps its per-biome tint under either palette
   }
   // Run stats line for game-over / win cards + screen readers
   function statsLine() {
@@ -890,7 +902,7 @@
       wall: 0xff4d2d,
       css: '#170404',
       ob: 'rock',
-      obColor: 0x54201c,
+      obColor: 0xc1440e,
       hemiSky: 0xffb59d,
       hemiGround: 0x2b0d0d,
       decor: 'shard',
@@ -958,6 +970,138 @@
     },
   ];
   var themeIdx = 0;
+  // Hand-designed obstacle layouts: one quadrant base per biome, mirrored at
+  // spawn time (see SnakeLogic.mirrorLayout). Fair by construction: no cells
+  // near the start zone, symmetric so no side is favored. The transpose and
+  // scatter variants keep runs fresh; all are seed-replayable.
+  var LAYOUTS = [
+    {
+      base: [
+        [2, 2],
+        [3, 6],
+      ],
+    }, // Meadow: lone stones
+    {
+      base: [
+        [1, 4],
+        [4, 2],
+      ],
+    }, // Desert: dune diagonals
+    {
+      base: [
+        [2, 5],
+        [5, 3],
+      ],
+    }, // Ocean: tidal pools
+    {
+      base: [
+        [4, 1],
+        [1, 4],
+        [4, 4],
+      ],
+    }, // Volcano: dense crater cross
+    {
+      base: [
+        [0, 5],
+        [5, 1],
+      ],
+    }, // Space: sparse asteroids
+    {
+      base: [
+        [2, 2],
+        [3, 5],
+      ],
+    }, // Forest: grove clusters
+    {
+      base: [
+        [5, 2],
+        [2, 6],
+      ],
+    }, // Sunset: mesa arcs
+    {
+      base: [
+        [2, 0],
+        [2, 6],
+        [6, 2],
+      ],
+    }, // Ice: frozen lanes
+  ];
+  // Per-biome food tints (3D mesh + light + 2D fallback share the table).
+  var FOOD_TINT = [
+    { c: 0xffc94d, e: 0xcc6a00, css: '#ffc94d' }, // Meadow: honey orb
+    { c: 0xff9f1c, e: 0x9c4a00, css: '#ff9f1c' }, // Desert: sunfruit
+    { c: 0x7fe7ff, e: 0x0a6a8a, css: '#7fe7ff' }, // Ocean: pearl
+    { c: 0xff5a2d, e: 0x7a1500, css: '#ff5a2d' }, // Volcano: ember
+    { c: 0x6ef3ff, e: 0x0a5a6e, css: '#6ef3ff' }, // Space: ion
+    { c: 0xff4d6d, e: 0x7a0f2b, css: '#ff4d6d' }, // Forest: berry
+    { c: 0xff7fb5, e: 0x7a1f4d, css: '#ff7fb5' }, // Sunset: blossom
+    { c: 0xbfefff, e: 0x2a6f97, css: '#bfefff' }, // Ice: frost
+  ];
+  // Per-biome wall builds (mirrors the obstacle-geo system).
+  var WALL_STYLE = ['slab', 'slab', 'slab', 'obsidian', 'slab', 'slab', 'slab', 'crystal'];
+  // Ambient weather per biome: count, color, mote size, fall (+=down, -=rise),
+  // sideways drift, half-extent of the volume, height. One shared Points cloud.
+  var AMBIENT = [
+    { n: 70, color: 0xbfff9f, size: 0.22, fall: 0.6, drift: 0.8, area: 26, h: 9 }, // Meadow pollen
+    { n: 90, color: 0xe8c47a, size: 0.18, fall: 0.25, drift: 3.2, area: 30, h: 7 }, // Desert sand
+    { n: 110, color: 0x7fc8ff, size: 0.16, fall: 5.5, drift: 0.4, area: 24, h: 12 }, // Ocean rain
+    { n: 80, color: 0xff7a2d, size: 0.2, fall: -2.2, drift: 0.9, area: 24, h: 10 }, // Volcano embers
+    { n: 60, color: 0xcfd6ff, size: 0.15, fall: 0.15, drift: 0.3, area: 30, h: 12 }, // Space dust
+    { n: 80, color: 0x9fe6a0, size: 0.2, fall: 1.1, drift: 1.2, area: 26, h: 10 }, // Forest leaves
+    { n: 70, color: 0xffb36b, size: 0.2, fall: 0.5, drift: 1.0, area: 26, h: 9 }, // Sunset petals
+    { n: 120, color: 0xffffff, size: 0.16, fall: 1.6, drift: 0.9, area: 26, h: 12 }, // Ice snow
+  ];
+  function biomeIs(name) {
+    return LEVELS[themeIdx].name === name;
+  }
+  function wallDims(style, horizontal) {
+    var L = GRID + 1;
+    if (style === 'crystal') return horizontal ? [L, 1.8, 0.35] : [0.35, 1.8, L];
+    if (style === 'obsidian') return horizontal ? [L, 0.8, 0.7] : [0.7, 0.8, L];
+    return horizontal ? [L, 1.1, 0.5] : [0.5, 1.1, L];
+  }
+  function applyWallStyle() {
+    if (!window.__wallMeshes || !window.THREE) return;
+    var style = WALL_STYLE[themeIdx] || 'slab';
+    for (var i = 0; i < window.__wallMeshes.length; i++) {
+      var m = window.__wallMeshes[i];
+      var d = wallDims(style, i < 2);
+      if (m.geometry) m.geometry.dispose();
+      m.geometry = new window.THREE.BoxGeometry(d[0], d[1], d[2]);
+    }
+    if (window.__wallMat) {
+      window.__wallMat.opacity = style === 'crystal' ? 0.5 : style === 'obsidian' ? 0.95 : 0.35;
+      window.__wallMat.transparent = true;
+    }
+  }
+  function applyFoodTint() {
+    var ft = FOOD_TINT[themeIdx] || FOOD_TINT[0];
+    if (mode !== '3d') return;
+    if (foodMesh) {
+      foodMesh.material.color.setHex(ft.c);
+      foodMesh.material.emissive.setHex(ft.e);
+    }
+    if (foodLight) foodLight.color.setHex(ft.c);
+    if (foodBase) foodBase.material.color.setHex(ft.c);
+  }
+  function rebuildAmbient() {
+    if (!window.__ambient || !window.THREE) return;
+    var A = AMBIENT[themeIdx] || AMBIENT[0];
+    window.__ambMat.color.setHex(A.color);
+    window.__ambMat.size = A.size;
+    window.__ambient.geometry.setDrawRange(0, A.n);
+    for (var i = 0; i < 120; i++) {
+      window.__ambPos[i * 3] = (Math.random() - 0.5) * A.area;
+      window.__ambPos[i * 3 + 1] = Math.random() * A.h;
+      window.__ambPos[i * 3 + 2] = (Math.random() - 0.5) * A.area;
+    }
+    window.__ambient.geometry.attributes.position.needsUpdate = true;
+    updateAmbientVisibility();
+  }
+  function updateAmbientVisibility() {
+    if (!window.__ambient) return;
+    window.__ambient.visible = mode === '3d' && quality !== 'low' && !reducedMotion;
+  }
   function applyTheme(idx) {
     themeIdx = ((idx % LEVELS.length) + LEVELS.length) % LEVELS.length;
     var L = LEVELS[themeIdx];
@@ -989,6 +1133,9 @@
         for (var oi = 0; oi < obstacleMeshes.length; oi++) obstacleMeshes[oi].geometry = og;
       }
       if (window.__stars) window.__stars.visible = LEVELS[themeIdx].name === 'Space';
+      applyWallStyle();
+      applyFoodTint();
+      rebuildAmbient();
       applyQualityVisuals();
     }
     return L;
@@ -1196,6 +1343,12 @@
     bonus = null;
     bonusLeft = 0;
     hasShield = false;
+    slideHeld = null;
+    embers = [];
+    emberAcc = 0;
+    emberToastShown = false;
+    runLayout = null;
+    warnPulses = [];
     seedGen = null; // fresh deterministic stream for seeded runs
     combo = 0;
     lastEatAt = 0;
@@ -1204,6 +1357,10 @@
     hideBonusMesh();
     hideShieldMesh();
     if (window.__shieldRing) window.__shieldRing.visible = false;
+    if (window.__emberRings)
+      for (var er = 0; er < window.__emberRings.length; er++) window.__emberRings[er].visible = false;
+    if (window.__warnRings)
+      for (var wr = 0; wr < window.__warnRings.length; wr++) window.__warnRings[wr].visible = false;
     if (window.__deathRing) window.__deathRing.visible = false;
     var fl = $('flash');
     if (fl) fl.classList.remove('show');
@@ -1225,6 +1382,7 @@
     o[food.x + food.y * GRID] = true;
     if (bonus) o[bonus.x + bonus.y * GRID] = true;
     if (shield) o[shield.x + shield.y * GRID] = true;
+    for (var e = 0; e < embers.length; e++) o[embers[e].x + embers[e].y * GRID] = true;
     for (var j = 0; j < obstacles.length; j++) o[obstacles[j].x + obstacles[j].y * GRID] = true;
     if (extra) o[extra.x + extra.y * GRID] = true;
     return o;
@@ -1243,15 +1401,95 @@
   }
   function seedObstacles(n) {
     obstacles = [];
+    // one variant per run: pattern, transposed pattern, or classic scatter.
+    // Chosen from the seeded stream, so links replay identical maps.
+    var r = rng();
+    var L = LAYOUTS[themeIdx] || LAYOUTS[0];
+    if (r < 0.15) runLayout = { scatter: true };
+    else runLayout = { base: L.base, transpose: r < 0.4 };
     addObstacles(n);
   }
+  function transposeBase(base) {
+    return base.map(function (c) {
+      return [c[1], c[0]];
+    });
+  }
   function addObstacles(n) {
-    for (var k = 0; k < n && obstacles.length < OBSTACLE_MAX; k++) {
-      var c = freeCell(4);
-      if (!c) return;
-      obstacles.push(c);
+    var before = obstacles.length;
+    var want = Math.min(OBSTACLE_MAX, before + n);
+    // pattern candidates first: mirrored, head-clear, unoccupied.
+    // Added as whole mirror orbits (always 4 cells) so truncation can never
+    // break symmetry; the first orbit is taken even when it overflows want
+    // slightly (counts land on multiples of 4: 4, 8, 12, ...).
+    if (runLayout && !runLayout.scatter) {
+      var cands = SnakeLogic.mirrorLayout(
+        runLayout.transpose ? transposeBase(runLayout.base) : runLayout.base,
+        GRID
+      );
+      var occ = occupiedMap();
+      var seenOb = {};
+      for (var i = 0; i < cands.length && obstacles.length < want; i++) {
+        var ck = cands[i].x + cands[i].y * GRID;
+        if (seenOb[ck]) continue;
+        // whole orbit of this cell
+        var orb = [
+          { x: cands[i].x, y: cands[i].y },
+          { x: GRID - 1 - cands[i].x, y: cands[i].y },
+          { x: cands[i].x, y: GRID - 1 - cands[i].y },
+          { x: GRID - 1 - cands[i].x, y: GRID - 1 - cands[i].y },
+        ];
+        var members = [];
+        for (var q = 0; q < orb.length; q++) {
+          var mk = orb[q].x + orb[q].y * GRID;
+          if (seenOb[mk]) continue;
+          seenOb[mk] = true;
+          if (occ[mk]) continue;
+          if (snake.length && Math.abs(orb[q].x - snake[0].x) + Math.abs(orb[q].y - snake[0].y) < 4) continue; // fairness beats symmetry near the head
+          members.push(orb[q]);
+        }
+        if (!members.length) continue;
+        if (obstacles.length + members.length > want && obstacles.length !== before) break;
+        for (var m2 = 0; m2 < members.length; m2++) {
+          obstacles.push(members[m2]);
+          occ[members[m2].x + members[m2].y * GRID] = true;
+        }
+      }
     }
+    // scatter fill for the rest (or the whole variant when scatter:true)
+    var guard = 0;
+    while (obstacles.length < want && guard++ < 500) {
+      var f = freeCell(4);
+      if (!f) break;
+      obstacles.push(f);
+    }
+    var fresh = obstacles.slice(before);
+    if (fresh.length) telegraph(fresh);
     syncObstacleMeshes(true);
+  }
+  // Danger telegraph: the 4-neighbors of fresh obstacles pulse briefly so
+  // level-up spikes read as fair instead of ambushes.
+  function telegraph(cells) {
+    var now = performance.now();
+    var dirs = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ];
+    for (var i = 0; i < cells.length; i++) {
+      for (var d = 0; d < dirs.length; d++) {
+        var x = cells[i].x + dirs[d][0],
+          y = cells[i].y + dirs[d][1];
+        if (x < 0 || y < 0 || x >= GRID || y >= GRID) continue;
+        warnPulses.push({ x: x, y: y, until: now + 1400 });
+      }
+    }
+    if (warnPulses.length > 64) warnPulses.splice(0, warnPulses.length - 64);
+  }
+  function activeWarns(now) {
+    var out = [];
+    for (var i = 0; i < warnPulses.length; i++) if (warnPulses[i].until > now) out.push(warnPulses[i]);
+    return out;
   }
   function levelUp(n) {
     level = n;
@@ -1263,6 +1501,10 @@
     if (musicOn()) startMusic(); // adopt the new biome's voice immediately
     showBanner(t('banner_level', { n: n, biome: biomeName(L.name) + ' ' + L.icon }));
     toast(t('level_t', { n: n, biome: biomeName(L.name) }));
+    if (L.name === 'Ice') {
+      toast(t('ice_banner')); // banner above keeps the level info; this teaches the slide
+      announce(t('ice_banner'));
+    }
     beep(523, 1046, 0.18, 'sine');
     announce(t('sr_level', { n: n, biome: biomeName(L.name) }));
     if (obstaclesOn()) addObstacles(OBSTACLE_PER_LEVEL);
@@ -1276,7 +1518,7 @@
     return true;
   }
   function queueDirection(nx, ny) {
-    var last = queue.length ? queue[queue.length - 1] : dir;
+    var last = queue.length ? queue[queue.length - 1] : slideHeld || dir;
     if (nx === last.x && ny === last.y) return;
     if (snake.length > 1 && nx === -last.x && ny === -last.y) return;
     if (queue.length < MAX_QUEUE) {
@@ -1288,7 +1530,7 @@
   // →/D to its right (screen coords: y grows downwards).
   // Double-turn U-turns are safe by geometry — no suicide guard needed here.
   function queueTurn(side) {
-    var last = queue.length ? queue[queue.length - 1] : dir;
+    var last = queue.length ? queue[queue.length - 1] : slideHeld || dir;
     var nx = side < 0 ? last.y : -last.y;
     var ny = side < 0 ? -last.x : last.x;
     queueDirection(nx, ny);
@@ -1309,11 +1551,23 @@
   // even though the grid step happens on the next fixed tick.
   function snapHeadVisual() {
     if (mode !== '3d' || !snakeMeshes.length) return;
-    var eff = queue.length ? queue[0] : dir;
+    var eff = queue.length ? queue[0] : slideHeld || dir;
     snakeMeshes[0].rotation.y = Math.atan2(eff.x, eff.y);
   }
   function step() {
-    if (queue.length) dir = queue.shift();
+    // ice rule: turns take effect one cell later (momentum pipeline)
+    if (biomeIs('Ice')) {
+      var sr = SnakeLogic.slideDir(queue, slideHeld, dir);
+      dir = sr.dir;
+      slideHeld = sr.pending;
+      queue = sr.queue;
+    } else {
+      if (slideHeld) {
+        queue.unshift(slideHeld); // leaving the ice: flush, no turn lost
+        slideHeld = null;
+      }
+      if (queue.length) dir = queue.shift();
+    }
     var np = SnakeLogic.nextPos(snake[0], dir);
     var nx = np.x,
       ny = np.y;
@@ -1342,6 +1596,16 @@
       if (tryShield()) return;
       die(t('die_self'), cell);
       return;
+    }
+    // volcano rule: ignited embers are lethal (telegraph phase is safe).
+    // Ages advance on play time only, so pausing freezes telegraphs fairly.
+    for (var ei = 0; ei < embers.length; ei++) {
+      var em = embers[ei];
+      if (em.x === nx && em.y === ny && em.age >= EMBER_WARN && em.age < EMBER_WARN + EMBER_BURN) {
+        if (tryShield()) return;
+        die(t('die_ember'), cell);
+        return;
+      }
     }
     snake.unshift({ x: nx, y: ny });
     if (snake.length > longest) longest = snake.length;
@@ -1412,6 +1676,12 @@
       announce(t('shield_ate'));
       hideTut();
     } else snake.pop();
+    // desert rule: uneaten food withers and respawns elsewhere (eating wins ties)
+    if (!willEat && biomeIs('Desert') && performance.now() - foodBornAt > DESERT_FOOD_TTL) {
+      spawnFood();
+      toast(t('desert_drain'));
+      announce(t('desert_drain'));
+    }
     syncSnakeMeshes();
     updateHUD();
   }
@@ -2064,16 +2334,19 @@
       roughness: 0.4,
     });
     window.__wallMat = wallMat;
+    var wallMeshes = [];
     function mkWall(w, d, x, z) {
       var m = new THREE.Mesh(new THREE.BoxGeometry(w, 1.1, d), wallMat);
       m.position.set(x, 0.55, z);
       m.castShadow = true;
       scene.add(m);
+      wallMeshes.push(m);
     }
     mkWall(GRID + 1, 0.5, 0, -GRID / 2 - 0.25);
     mkWall(GRID + 1, 0.5, 0, GRID / 2 + 0.25);
     mkWall(0.5, GRID + 1, -GRID / 2 - 0.25, 0);
     mkWall(0.5, GRID + 1, GRID / 2 + 0.25, 0);
+    window.__wallMeshes = wallMeshes; // N,S,E,W order (first two are horizontal)
 
     // shared geo/mat pool (rounded bead segments; palette applied below)
     window.__snakeGeo = new THREE.SphereGeometry(0.5, 18, 14);
@@ -2180,6 +2453,61 @@
     window.__deathRing.position.y = 0.06;
     window.__deathRing.visible = false;
     scene.add(window.__deathRing);
+    // volcano embers: phase rings (orange telegraph -> red burn), pooled
+    window.__emberRings = [];
+    for (var eri = 0; eri < EMBER_MAX; eri++) {
+      var er = new THREE.Mesh(
+        new THREE.RingGeometry(0.3, 0.5, 32),
+        new THREE.MeshBasicMaterial({
+          color: 0xff9f1c,
+          transparent: true,
+          opacity: 0.9,
+          side: THREE.DoubleSide,
+        })
+      );
+      er.rotation.x = -Math.PI / 2;
+      er.position.y = 0.05;
+      er.visible = false;
+      scene.add(er);
+      window.__emberRings.push(er);
+    }
+    // obstacle telegraphs: neighbor cells pulse briefly on fresh spawns
+    window.__warnRings = [];
+    for (var wri = 0; wri < 16; wri++) {
+      var wr = new THREE.Mesh(
+        new THREE.RingGeometry(0.32, 0.44, 4),
+        new THREE.MeshBasicMaterial({
+          color: 0xffb36b,
+          transparent: true,
+          opacity: 0,
+          side: THREE.DoubleSide,
+        })
+      );
+      wr.rotation.x = -Math.PI / 2;
+      wr.rotation.z = Math.PI / 4;
+      wr.position.y = 0.04;
+      wr.visible = false;
+      scene.add(wr);
+      window.__warnRings.push(wr);
+    }
+    // ambient weather: one recycled Points cloud, per-biome params
+    window.__ambPos = new Float32Array(120 * 3);
+    var ambGeo = new THREE.BufferGeometry();
+    ambGeo.setAttribute('position', new THREE.BufferAttribute(window.__ambPos, 3));
+    window.__ambMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 0.2,
+      map: glowTexture(),
+      transparent: true,
+      opacity: 0.7,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    window.__ambient = new THREE.Points(ambGeo, window.__ambMat);
+    window.__ambient.frustumCulled = false;
+    window.__ambient.visible = false;
+    scene.add(window.__ambient);
+    rebuildAmbient();
 
     // starfield shell (Space biome only)
     var starGeo = new THREE.BufferGeometry();
@@ -2558,11 +2886,22 @@
     window.__decorMeshes = [];
     window.__decorOwner = [];
     var dummy = new THREE.Object3D();
-    // even ring road: every k-th slot around the arena with jitter. Reads as
-    // intentional landscaping (not noise, not clumps), and the square clamp
-    // below provably keeps every piece off the board + walls.
+    // Landscaping: an even ring road (60%) plus 3 themed clusters (40%).
+    // Both go through clampOutside, so the Chebyshev audit provably keeps
+    // every piece off the board + walls. Counts per biome are unchanged.
     var ringMin = 13.5,
       ringMax = 22;
+    function clampOutside(px, pz) {
+      var pm = Math.max(Math.abs(px), Math.abs(pz));
+      if (pm < ringMin) {
+        px *= ringMin / pm;
+        pz *= ringMin / pm;
+      } else if (pm > ringMax) {
+        px *= ringMax / pm;
+        pz *= ringMax / pm;
+      }
+      return [px, pz];
+    }
     var trunkMat = new THREE.MeshStandardMaterial({ color: 0x5a3a22, roughness: 0.9 });
     for (var bi = 0; bi < LEVELS.length; bi++) {
       var D = DECORTABLE[LEVELS[bi].decor];
@@ -2580,20 +2919,28 @@
         tm.frustumCulled = false;
       }
       for (var k = 0; k < D.count; k++) {
-        // slot k evenly around the ring, jittered; Chebyshev clamp keeps a
-        // hard clear margin off the ±10.25 walls on every side + corner
-        var sa = ((k + 0.15 + Math.random() * 0.7) / D.count) * Math.PI * 2;
-        var sr = 14 + Math.random() * 4.5;
-        var px = Math.cos(sa) * sr,
+        var px, pz;
+        if (k < Math.ceil(D.count * 0.6)) {
+          // ring road: slot k evenly around the arena, jittered
+          var sa = ((k + 0.15 + Math.random() * 0.7) / D.count) * Math.PI * 2;
+          var sr = 14 + Math.random() * 4.5;
+          px = Math.cos(sa) * sr;
           pz = Math.sin(sa) * sr;
-        var pm = Math.max(Math.abs(px), Math.abs(pz));
-        if (pm < ringMin) {
-          px *= ringMin / pm;
-          pz *= ringMin / pm;
-        } else if (pm > ringMax) {
-          px *= ringMax / pm;
-          pz *= ringMax / pm;
+        } else {
+          // themed cluster: 3 clumps at biome-offset angles, gaussian-ish blob
+          var ci = (k + bi) % 3;
+          var ca = bi * 2.4 + ci * ((Math.PI * 2) / 3);
+          var cr = 16.5;
+          var cx = Math.cos(ca) * cr,
+            cz = Math.sin(ca) * cr;
+          var jx = (Math.random() + Math.random() + Math.random() - 1.5) * 1.8;
+          var jz = (Math.random() + Math.random() + Math.random() - 1.5) * 1.8;
+          px = cx + jx;
+          pz = cz + jz;
         }
+        var cl = clampOutside(px, pz);
+        px = cl[0];
+        pz = cl[1];
         var s = D.s0 + Math.random() * (D.s1 - D.s0);
         dummy.position.set(px, D.y0 + Math.random() * (D.y1 - D.y0), pz);
         dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
@@ -2632,6 +2979,7 @@
   // Quality-gated visuals: low tier sheds texture + decor (flat classic look)
   function applyQualityVisuals() {
     if (mode !== '3d' || !scene) return;
+    updateAmbientVisibility();
     if (window.__groundMat) {
       var wantMap = quality !== 'low';
       if (!!window.__groundMat.map !== wantMap) {
@@ -2711,6 +3059,19 @@
     shield = null;
     shieldLeft = 0;
     if (window.__shieldMesh) window.__shieldMesh.visible = false;
+  }
+  // Volcano rule: embers telegraph (orange, safe) then ignite (red, lethal).
+  function spawnEmber() {
+    if (embers.length >= EMBER_MAX || snake.length >= GRID * GRID - 1) return false;
+    var c = freeCell(3);
+    if (!c) return false;
+    embers.push({ x: c.x, y: c.y, age: 0 });
+    if (!emberToastShown) {
+      emberToastShown = true;
+      toast(t('ember_first'));
+      announce(t('ember_first'));
+    }
+    return true;
   }
   // Lethal crash with a charge held: consume it, hold position, live on.
   function tryShield() {
@@ -2898,17 +3259,71 @@
       ctx2d.stroke();
     }
     var ob;
+    // subtle checkerboard ground tint so the fallback has texture too
+    ctx2d.fillStyle = 'rgba(255,255,255,0.03)';
+    for (var gx = 0; gx < GRID; gx++)
+      for (var gy = 0; gy < GRID; gy++)
+        if ((gx + gy) % 2 === 0) ctx2d.fillRect(ox + gx * cell, oy + gy * cell, cell, cell);
+    // themed obstacle glyphs echo the 3D geos (box=square, rock=circle,
+    // spike=triangle, cry=diamond), drawn in the biome obstacle color
+    var obCss = '#' + LEVELS[themeIdx].obColor.toString(16).padStart(6, '0');
+    var obKind = LEVELS[themeIdx].ob;
+    var glyph =
+      obKind === 'spike' ? 'tri' : obKind === 'rock' ? 'circle' : obKind === 'cry' ? 'diamond' : 'square';
     for (ob = 0; ob < obstacles.length; ob++) {
-      ctx2d.fillStyle = '#' + LEVELS[themeIdx].wall.toString(16).padStart(6, '0');
-      ctx2d.fillRect(ox + obstacles[ob].x * cell + 1, oy + obstacles[ob].y * cell + 1, cell - 2, cell - 2);
+      var ocx = ox + (obstacles[ob].x + 0.5) * cell,
+        ocy = oy + (obstacles[ob].y + 0.5) * cell,
+        orr = cell * 0.42;
+      ctx2d.fillStyle = obCss;
       ctx2d.strokeStyle = '#241a3d';
       ctx2d.lineWidth = 2;
-      ctx2d.strokeRect(ox + obstacles[ob].x * cell + 2, oy + obstacles[ob].y * cell + 2, cell - 4, cell - 4);
+      ctx2d.beginPath();
+      if (glyph === 'circle') ctx2d.arc(ocx, ocy, orr, 0, 7);
+      else if (glyph === 'tri') {
+        ctx2d.moveTo(ocx, ocy - orr);
+        ctx2d.lineTo(ocx + orr, ocy + orr);
+        ctx2d.lineTo(ocx - orr, ocy + orr);
+        ctx2d.closePath();
+      } else if (glyph === 'diamond') {
+        ctx2d.moveTo(ocx, ocy - orr);
+        ctx2d.lineTo(ocx + orr, ocy);
+        ctx2d.lineTo(ocx, ocy + orr);
+        ctx2d.lineTo(ocx - orr, ocy);
+        ctx2d.closePath();
+      } else ctx2d.rect(ocx - orr, ocy - orr, orr * 2, orr * 2);
+      ctx2d.fill();
+      ctx2d.stroke();
     }
-    ctx2d.fillStyle = pal.food;
-    ctx2d.beginPath();
-    ctx2d.arc(ox + (food.x + 0.5) * cell, oy + (food.y + 0.5) * cell, cell * 0.36, 0, 7);
-    ctx2d.fill();
+    // volcano embers (2D): orange telegraph outline, red burning fill
+    var now2d = performance.now();
+    for (var emi = 0; emi < embers.length; emi++) {
+      var em3 = embers[emi];
+      if (em3.age >= EMBER_WARN) {
+        ctx2d.fillStyle = '#ff2d2d';
+        ctx2d.fillRect(ox + em3.x * cell + 1, oy + em3.y * cell + 1, cell - 2, cell - 2);
+      } else {
+        ctx2d.strokeStyle = '#ff9f1c';
+        ctx2d.lineWidth = 2;
+        ctx2d.strokeRect(ox + em3.x * cell + 2, oy + em3.y * cell + 2, cell - 4, cell - 4);
+      }
+    }
+    // telegraph pulses (2D)
+    var aw2d = warnPulses.length ? activeWarns(now2d) : [];
+    ctx2d.strokeStyle = 'rgba(255,179,107,0.8)';
+    ctx2d.lineWidth = 2;
+    for (var wi = 0; wi < aw2d.length; wi++)
+      ctx2d.strokeRect(ox + aw2d[wi].x * cell + 3, oy + aw2d[wi].y * cell + 3, cell - 6, cell - 6);
+    var foodTintCss = (FOOD_TINT[themeIdx] || FOOD_TINT[0]).css;
+    var desertBlink =
+      biomeIs('Desert') && DESERT_FOOD_TTL - (now2d - foodBornAt) < 5000
+        ? Math.floor(now2d / 125) % 2 === 0
+        : true;
+    if (desertBlink) {
+      ctx2d.fillStyle = foodTintCss;
+      ctx2d.beginPath();
+      ctx2d.arc(ox + (food.x + 0.5) * cell, oy + (food.y + 0.5) * cell, cell * 0.36, 0, 7);
+      ctx2d.fill();
+    }
     if (bonus) {
       var blink = bonusLeft > 2000 || Math.floor(performance.now() / 125) % 2 === 0;
       if (blink) {
@@ -3056,6 +3471,20 @@
       shieldLeft -= dt * 1000;
       if (shieldLeft <= 0) hideShieldMesh();
     }
+    // volcano embers age on play time in both modes (frozen in pause)
+    if (state === 'playing' && biomeIs('Volcano')) {
+      emberAcc += dt * 1000;
+      if (emberAcc > EMBER_EVERY) {
+        emberAcc = 0;
+        spawnEmber();
+      }
+    } else if (state !== 'playing') emberAcc = 0;
+    if (state === 'playing') {
+      for (var emi = embers.length - 1; emi >= 0; emi--) {
+        embers[emi].age += dt * 1000;
+        if (embers[emi].age >= EMBER_WARN + EMBER_BURN) embers.splice(emi, 1);
+      }
+    }
 
     if (mode === '2d') {
       draw2D(dt);
@@ -3118,6 +3547,13 @@
       var sc = 1 + Math.sin(t * 3) * 0.08;
       foodBase.scale.set(sc, sc, 1);
     } else foodMesh.scale.setScalar(foodPop);
+    // desert rule: food blinks in its last 5s before withering
+    var desertUrgent =
+      state === 'playing' && biomeIs('Desert') && DESERT_FOOD_TTL - (now - foodBornAt) < 5000;
+    var foodShown = !desertUrgent || Math.floor(t * 8) % 2 === 0;
+    foodMesh.visible = foodShown;
+    if (foodLight) foodLight.visible = foodShown;
+    if (foodBase) foodBase.visible = foodShown;
     if (window.__gridMat && !reducedMotion) window.__gridMat.opacity = 0.45 + 0.15 * Math.sin(t * 1.2);
     // bonus pickup motion (countdown handled above for both modes)
     if (bonus && window.__bonusMesh) {
@@ -3135,6 +3571,61 @@
     if (window.__deathRing && window.__deathRing.visible && !reducedMotion) {
       var ds = 1 + Math.sin(t * 10) * 0.15;
       window.__deathRing.scale.set(ds, ds, 1);
+    }
+    // volcano ember rings: orange telegraph, red burn
+    if (window.__emberRings) {
+      for (var eri = 0; eri < window.__emberRings.length; eri++) {
+        var emRing = embers[eri];
+        var erMesh = window.__emberRings[eri];
+        if (!emRing || state !== 'playing') {
+          erMesh.visible = false;
+          continue;
+        }
+        var ew = gridToWorld(emRing.x, emRing.y);
+        erMesh.position.set(ew.x, 0.05, ew.z);
+        var burning = emRing.age >= EMBER_WARN;
+        erMesh.material.color.setHex(burning ? 0xff2d2d : 0xff9f1c);
+        erMesh.material.opacity = burning ? 0.95 : 0.55 + 0.35 * Math.sin(t * 8);
+        var es2 = burning ? 1 + 0.1 * Math.sin(t * 12) : 1;
+        erMesh.scale.set(es2, es2, 1);
+        erMesh.visible = true;
+      }
+    }
+    // obstacle telegraph rings: fade as they expire (zero-alloc fast path)
+    if (window.__warnRings) {
+      var aw = warnPulses.length ? activeWarns(now) : [];
+      for (var wri = 0; wri < window.__warnRings.length; wri++) {
+        var wrMesh = window.__warnRings[wri];
+        var wp = aw[wri];
+        if (!wp) {
+          wrMesh.visible = false;
+          continue;
+        }
+        var ww = gridToWorld(wp.x, wp.y);
+        wrMesh.position.set(ww.x, 0.04, ww.z);
+        var remain = Math.max(0, (wp.until - now) / 1400);
+        wrMesh.material.opacity = 0.25 + 0.6 * remain;
+        var ws = 1 + (1 - remain) * 0.3;
+        wrMesh.scale.set(ws, ws, 1);
+        wrMesh.visible = true;
+      }
+    }
+    // ambient weather drift (positions wrap inside the biome volume)
+    if (window.__ambient && window.__ambient.visible) {
+      var amb = AMBIENT[themeIdx] || AMBIENT[0];
+      var ap = window.__ambPos;
+      for (var ai = 0; ai < amb.n; ai++) {
+        var ay = ap[ai * 3 + 1] - amb.fall * dt;
+        if (ay > amb.h) ay = 0;
+        else if (ay < 0) ay = amb.h;
+        var ax = ap[ai * 3] + (amb.drift + Math.sin(t * 1.7 + ai) * 0.4) * dt;
+        var half = amb.area / 2;
+        if (ax > half) ax = -half;
+        else if (ax < -half) ax = half;
+        ap[ai * 3] = ax;
+        ap[ai * 3 + 1] = ay;
+      }
+      window.__ambient.geometry.attributes.position.needsUpdate = true;
     }
     // shield pickup motion + held-charge halo on the head
     if (shield && window.__shieldMesh) {
@@ -3372,7 +3863,57 @@
     step: step,
     setFood: function (x, y) {
       food = { x: x, y: y };
+      foodBornAt = performance.now();
       placeFoodMesh();
+    },
+    // test hook: age the current food past its desert TTL to force a wither
+    witherFood: function () {
+      foodBornAt = performance.now() - DESERT_FOOD_TTL - 1000;
+    },
+    get embers() {
+      return embers.map(function (e) {
+        return { x: e.x, y: e.y, age: Math.round(e.age) };
+      });
+    },
+    // test hook: plant an ember with a chosen age (0 = telegraph, >=WARN = burning)
+    setEmber: function (x, y, age) {
+      embers = [{ x: x, y: y, age: age || 0 }];
+    },
+    clearEmbers: function () {
+      embers = [];
+    },
+    get warnCount() {
+      return activeWarns(performance.now()).length;
+    },
+    get ambient() {
+      var A = AMBIENT[themeIdx] || AMBIENT[0];
+      return {
+        visible: !!(window.__ambient && window.__ambient.visible),
+        count: A.n,
+        color: A.color,
+      };
+    },
+    obGlyph: function () {
+      var k = LEVELS[themeIdx].ob;
+      return k === 'spike' ? 'tri' : k === 'rock' ? 'circle' : k === 'cry' ? 'diamond' : 'square';
+    },
+    get layout() {
+      return runLayout ? { scatter: !!runLayout.scatter, transpose: !!runLayout.transpose } : null;
+    },
+    // test hooks: themed food tint + wall build heights
+    get foodTint() {
+      try {
+        return foodMesh ? foodMesh.material.color.getHex() : -1;
+      } catch (e) {
+        return -1;
+      }
+    },
+    get wallH() {
+      try {
+        return window.__wallMeshes ? window.__wallMeshes[0].geometry.parameters.height : -1;
+      } catch (e) {
+        return -1;
+      }
     },
     setSnake: function (arr) {
       snake = arr.map(function (s) {
@@ -3384,6 +3925,7 @@
     setDir: function (x, y) {
       dir = { x: x, y: y };
       queue = [];
+      slideHeld = null;
     },
     die: die,
     win: win,

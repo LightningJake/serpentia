@@ -644,23 +644,32 @@ async function newPage(browser, blockCDN) {
     await page.evaluate(() => window.__game.setFood(19, 19));
     await page.waitForTimeout(400);
     check('arrow: shown when food far', await page.locator('#food-arrow').isVisible());
-    const geom = await page.evaluate(() => {
-      const r = document.getElementById('food-arrow').getBoundingClientRect();
-      const s = window.__game.snake[0];
-      const f = window.__game.food;
-      const h = window.__game.screenFor(s.x, s.y);
-      const fp = window.__game.screenFor(f.x, f.y);
-      const ax = r.left + r.width / 2;
-      const ay = r.top + r.height / 2;
-      const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
-      const la = Math.hypot(ax - h.x, ay - h.y);
-      const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
-      return {
-        cos: dot / (la * lf),
-        dist: document.getElementById('food-dist').textContent,
-        want: String(Math.abs(f.x - s.x) + Math.abs(f.y - s.y)),
-      };
-    });
+    // best-of-3: the arrow DOM trails the live camera by a frame, and under
+    // software GL a single read can catch it mid-ease (same pattern as the
+    // resolutions suite). Distance is state-exact; bearing takes the best.
+    let geom = { cos: -2, dist: null, want: null };
+    for (let gs = 0; gs < 3; gs++) {
+      const sample = await page.evaluate(() => {
+        const r = document.getElementById('food-arrow').getBoundingClientRect();
+        const s = window.__game.snake[0];
+        const f = window.__game.food;
+        const h = window.__game.screenFor(s.x, s.y);
+        const fp = window.__game.screenFor(f.x, f.y);
+        if (!h || !fp) return null;
+        const ax = r.left + r.width / 2;
+        const ay = r.top + r.height / 2;
+        const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
+        const la = Math.hypot(ax - h.x, ay - h.y);
+        const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
+        return {
+          cos: dot / (la * lf),
+          dist: document.getElementById('food-dist').textContent,
+          want: String(Math.abs(f.x - s.x) + Math.abs(f.y - s.y)),
+        };
+      });
+      if (sample && sample.cos > geom.cos) geom = sample;
+      await page.waitForTimeout(150);
+    }
     check(
       'arrow: points at food with live distance',
       geom.cos > 0.8 && geom.dist === geom.want,
@@ -674,27 +683,33 @@ async function newPage(browser, blockCDN) {
       window.__game.setFood(19, 10);
     });
     await page.waitForTimeout(400);
-    const wgeom = await page.evaluate(() => {
-      const r = document.getElementById('food-arrow').getBoundingClientRect();
-      const s = window.__game.snake[0];
-      const f = window.__game.food;
-      let dx = f.x - s.x,
-        dy = f.y - s.y;
-      dx -= 20 * Math.round(dx / 20);
-      dy -= 20 * Math.round(dy / 20);
-      const h = window.__game.screenFor(s.x, s.y);
-      const fp = window.__game.screenFor(s.x + dx, s.y + dy);
-      const ax = r.left + r.width / 2;
-      const ay = r.top + r.height / 2;
-      const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
-      const la = Math.hypot(ax - h.x, ay - h.y);
-      const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
-      return {
-        cos: lf > 1 ? dot / (la * lf) : 1,
-        dist: document.getElementById('food-dist').textContent,
-        want: String(Math.abs(dx) + Math.abs(dy)),
-      };
-    });
+    let wgeom = { cos: -2, dist: null, want: null };
+    for (let ws = 0; ws < 3; ws++) {
+      const sample = await page.evaluate(() => {
+        const r = document.getElementById('food-arrow').getBoundingClientRect();
+        const s = window.__game.snake[0];
+        const f = window.__game.food;
+        let dx = f.x - s.x,
+          dy = f.y - s.y;
+        dx -= 20 * Math.round(dx / 20);
+        dy -= 20 * Math.round(dy / 20);
+        const h = window.__game.screenFor(s.x, s.y);
+        const fp = window.__game.screenFor(s.x + dx, s.y + dy);
+        if (!h || !fp) return null;
+        const ax = r.left + r.width / 2;
+        const ay = r.top + r.height / 2;
+        const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
+        const la = Math.hypot(ax - h.x, ay - h.y);
+        const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
+        return {
+          cos: lf > 1 ? dot / (la * lf) : 1,
+          dist: document.getElementById('food-dist').textContent,
+          want: String(Math.abs(dx) + Math.abs(dy)),
+        };
+      });
+      if (sample && sample.cos > wgeom.cos) wgeom = sample;
+      await page.waitForTimeout(150);
+    }
     check(
       'arrow: wrap shortest-path bearing',
       wgeom.cos > 0.8 && wgeom.dist === wgeom.want,
@@ -1100,6 +1115,7 @@ async function newPage(browser, blockCDN) {
     check('link: seed param arms deterministic rng', (await g(page, 'seed')) === 7);
     await page.evaluate(() => {
       document.getElementById('opt-obstacles').checked = false;
+      document.getElementById('opt-wrap').checked = true;
       window.__game.start();
     });
     await page.waitForTimeout(300);
@@ -1110,6 +1126,7 @@ async function newPage(browser, blockCDN) {
     });
     await page.evaluate(() => {
       document.getElementById('opt-obstacles').checked = false;
+      document.getElementById('opt-wrap').checked = true;
       window.__game.start();
     });
     await page.waitForTimeout(300);
@@ -1119,8 +1136,212 @@ async function newPage(browser, blockCDN) {
       foodA.x === foodB.x && foodA.y === foodB.y,
       JSON.stringify({ a: foodA, b: foodB })
     );
+    // same seed replays identical obstacle maps too (layouts are seeded)
+    async function seededObstacles() {
+      await page.goto(linkUrl, { waitUntil: 'load' });
+      await page.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
+        timeout: 25000,
+      });
+      await page.evaluate(() => {
+        document.getElementById('opt-obstacles').checked = true;
+        document.getElementById('opt-wrap').checked = true;
+        window.__game.start();
+        window.__game.pause();
+      });
+      await page.waitForTimeout(200);
+      return {
+        obs: await g(page, 'obstacles'),
+        layout: await g(page, 'layout'),
+        head: (await g(page, 'snake'))[0],
+      };
+    }
+    const runA = await seededObstacles();
+    const runB = await seededObstacles();
+    check(
+      'link: same seed, same obstacles',
+      JSON.stringify(runA.obs) === JSON.stringify(runB.obs) && runA.obs.length > 0,
+      runA.obs.length + ' obstacles'
+    );
+    check(
+      'link: same seed, same layout variant',
+      JSON.stringify(runA.layout) === JSON.stringify(runB.layout),
+      JSON.stringify(runA.layout)
+    );
     // 7. SW update row exists (revealed by real updates; hidden by default)
     check('update: row hidden by default', await page.locator('#update-row').isHidden());
+
+    // ---- map round: layouts, terrain rules, ambient, themed food/walls
+    // clean page: variant roulette must not inherit the seeded link above
+    await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
+    await page.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
+      timeout: 25000,
+    });
+    // 1. layouts: retry until a patterned variant, then prove symmetry + clearance
+    let sym = { n: 0, mirror: false, clear: false, scatter: true };
+    for (let la = 0; la < 6 && (sym.scatter || sym.n === 0); la++) {
+      await page.evaluate(() => {
+        document.getElementById('opt-obstacles').checked = true;
+        document.getElementById('opt-wrap').checked = true;
+        window.__game.start();
+        window.__game.pause();
+      });
+      await page.waitForTimeout(150);
+      sym = await page.evaluate(() => {
+        const obs = window.__game.obstacles;
+        const set = {};
+        obs.forEach((o) => (set[o.x + o.y * 20] = true));
+        const head = window.__game.snake[0];
+        return {
+          n: obs.length,
+          mirror: obs.every((o) => set[19 - o.x + o.y * 20] && set[o.x + (19 - o.y) * 20]),
+          clear: obs.every((o) => Math.abs(o.x - head.x) + Math.abs(o.y - head.y) >= 4),
+          scatter: (window.__game.layout || {}).scatter === true,
+        };
+      });
+    }
+    check(
+      'layout: patterned variant symmetric + head-clear',
+      sym.n > 0 && !sym.scatter && sym.mirror && sym.clear,
+      JSON.stringify(sym)
+    );
+    // 7. telegraph: fresh spawns pulse, then expire
+    check('telegraph: neighbors pulse on spawn', (await g(page, 'warnCount')) > 0);
+    await page.waitForTimeout(1600);
+    check('telegraph: pulses expire', (await g(page, 'warnCount')) === 0);
+    // 2a. ice slide: the turn lands one cell later
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setTheme(7);
+    });
+    await page.keyboard.press('ArrowLeft'); // snake-left from east = north
+    await page.evaluate(() => window.__game.step());
+    const iceH1 = (await g(page, 'snake'))[0];
+    check(
+      'ice: turn slides one cell later',
+      (await g(page, 'dir')).x === 1 && (await g(page, 'dir')).y === 0 && iceH1.x === 11 && iceH1.y === 10,
+      JSON.stringify({ dir: await g(page, 'dir'), head: iceH1 })
+    );
+    // 2b. leaving the ice flushes the stashed turn immediately
+    await page.evaluate(() => {
+      window.__game.setTheme(0);
+      window.__game.step();
+    });
+    check('ice: flush on warm ground', (await g(page, 'dir')).x === 0 && (await g(page, 'dir')).y === -1);
+    // 2c. staying on ice: the stashed turn applies on the next tick
+    await page.evaluate(() => {
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setTheme(7);
+    });
+    await page.keyboard.press('ArrowLeft');
+    await page.evaluate(() => {
+      window.__game.step();
+      window.__game.step();
+    });
+    const iceH3 = (await g(page, 'snake'))[0];
+    check(
+      'ice: stashed turn applies next tick',
+      (await g(page, 'dir')).x === 0 && (await g(page, 'dir')).y === -1 && iceH3.x === 11 && iceH3.y === 9,
+      JSON.stringify({ dir: await g(page, 'dir'), head: iceH3 })
+    );
+    // 2d. desert drain: withered food respawns with a warning (raw ticks: deterministic)
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setTheme(1);
+      window.__game.setFood(5, 5);
+      window.__game.witherFood();
+      window.__game.step();
+      window.__game.step();
+    });
+    await page.waitForTimeout(200);
+    const drainToast = (await page.locator('#toast').textContent()) || '';
+    check(
+      'desert: withered food respawns',
+      /withered/.test(drainToast) && (await g(page, 'state')) === 'paused',
+      drainToast + '/' + (await g(page, 'state'))
+    );
+    // 2e. volcano embers: ignited cells kill, telegraphs are safe to cross
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setTheme(3);
+      window.__game.setEmber(11, 10, 2500);
+    });
+    await page.evaluate(() => window.__game.step());
+    check('ember: ignited cell kills', (await g(page, 'state')) === 'over');
+    await page.waitForTimeout(1400);
+    const emberSub = (await page.locator('#ov-sub').textContent()) || '';
+    check('ember: recap names fire', /fire/i.test(emberSub), emberSub);
+    await page.evaluate(() => {
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setTheme(3);
+      window.__game.setEmber(11, 10, 0);
+    });
+    await page.evaluate(() => window.__game.step());
+    check('ember: telegraph phase safe', (await g(page, 'state')) === 'paused');
+    // 3+4. ambient cloud, food tints, wall builds, glyph map across all biomes
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      window.__game.start();
+    });
+    const wantGlyphs = ['square', 'circle', 'diamond', 'circle', 'square', 'tri', 'square', 'diamond'];
+    let ambDataOk = true,
+      ambGateOk = true;
+    const glyphs = [];
+    let tint0 = 0,
+      tint3 = 0,
+      wallMeadow = 0,
+      wallIce = 0;
+    for (let ai = 0; ai < 8; ai++) {
+      await page.evaluate((i) => window.__game.setTheme(i), ai);
+      await page.waitForTimeout(300);
+      const row = await page.evaluate(() => ({
+        vis: window.__game.ambient.visible,
+        n: window.__game.ambient.count,
+        color: window.__game.ambient.color,
+        tint: window.__game.foodTint,
+        wall: window.__game.wallH,
+        glyph: window.__game.obGlyph(),
+        quality: window.__game.quality,
+      }));
+      glyphs.push(row.glyph);
+      if (!(row.n > 0 && row.color > 0)) ambDataOk = false;
+      if (row.vis !== (row.quality !== 'low')) ambGateOk = false;
+      if (ai === 0) {
+        tint0 = row.tint;
+        wallMeadow = row.wall;
+      }
+      if (ai === 3) tint3 = row.tint;
+      if (ai === 7) wallIce = row.wall;
+    }
+    check('ambient: per-biome cloud data on all maps', ambDataOk);
+    check('ambient: visibility follows quality tier', ambGateOk);
+    check('food: tint changes per biome', tint0 !== tint3 && tint0 > 0 && tint3 > 0, tint0 + '/' + tint3);
+    check('walls: ice crystal build taller', wallIce > wallMeadow, wallMeadow + '/' + wallIce);
+    check(
+      'glyphs: obstacle map follows biome geos',
+      JSON.stringify(glyphs) === JSON.stringify(wantGlyphs),
+      glyphs.join(',')
+    );
 
     check('no page errors in 3D session', errors.length === 0, errors.slice(0, 2).join(' | '));
     await page.close();
@@ -1157,6 +1378,29 @@ async function newPage(browser, blockCDN) {
       window.__game.step();
     });
     check('2D: bonus orb works', (await g(page2, 'score')) === 50, 'score=' + (await g(page2, 'score')));
+    // 2D parity: themed obstacle glyphs follow the biome geos
+    const glyphs2d = {};
+    for (const [ti, want] of [
+      [0, 'square'],
+      [1, 'circle'],
+      [5, 'tri'],
+      [2, 'diamond'],
+    ]) {
+      await page2.evaluate((i) => window.__game.setTheme(i), ti);
+      await page2.waitForTimeout(150);
+      glyphs2d[ti] = await page2.evaluate(() => window.__game.obGlyph());
+      check('2D: glyph for theme ' + ti, glyphs2d[ti] === want, glyphs2d[ti]);
+    }
+    // 2D ember + telegraph render paths stay silent
+    await page2.evaluate(() => {
+      document.getElementById('opt-obstacles').checked = true;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setEmber(5, 5, 2500);
+      window.__game.step();
+    });
+    await page2.waitForTimeout(300);
+    check('2D: ember render path alive', (await g(page2, 'state')) === 'paused');
     await page2.evaluate(() => {
       document.getElementById('opt-obstacles').checked = true;
       window.__game.start();
