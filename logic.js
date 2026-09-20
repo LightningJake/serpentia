@@ -77,6 +77,17 @@
   function manhattan(a, b) {
     return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
   }
+  // Deterministic PRNG (mulberry32) for seeded runs (?seed= deep links).
+  // Same seed -> same sequence, so a shared link replays identical spawns.
+  function mulberry32(seed) {
+    var a = seed | 0;
+    return function () {
+      a = (a + 0x6d2b79f5) | 0;
+      var z = Math.imul(a ^ (a >>> 15), 1 | a);
+      z = (z + Math.imul(z ^ (z >>> 7), 61 | z)) ^ z;
+      return ((z ^ (z >>> 14)) >>> 0) / 4294967296;
+    };
+  }
   function fmtTime(ms) {
     var s = Math.max(0, Math.floor(ms / 1000));
     return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
@@ -94,6 +105,7 @@
     snapDir: snapDir,
     findFree: findFree,
     manhattan: manhattan,
+    mulberry32: mulberry32,
     fmtTime: fmtTime,
   };
 });

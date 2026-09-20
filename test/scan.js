@@ -156,5 +156,12 @@ const dupKeys = Object.entries(keyCounts)
 if (dupKeys.length) bad('duplicate hook keys', dupKeys.join(', '));
 else good('duplicate hook keys');
 
+// ---- 14. every biome has a music voice (MUSICTHEMES length === LEVELS length)
+const musicRegion = main.slice(main.indexOf('var MUSICTHEMES = ['), main.indexOf('function musicTheme'));
+const musicCount = (musicRegion.match(/\bbpm\s*:/g) || []).length;
+const levelCount = (levelsRegion.match(/\bname\s*:/g) || []).length;
+if (musicCount !== levelCount) bad('music voices', musicCount + ' voices for ' + levelCount + ' biomes');
+else good('music voices (' + musicCount + ' biomes)');
+
 console.log('\n==== scan: ' + (fails ? 'FAILURES' : 'all clean') + ' ====');
 process.exit(fails ? 1 : 0);

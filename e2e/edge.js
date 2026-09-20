@@ -86,7 +86,11 @@ async function launch() {
     );
 
     // 4. music survives pause/resume, stops on quit
-    await page.evaluate(() => window.__game.start());
+    // (wrap on: clicks can land late under load; the snake must outlive the gaps)
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      window.__game.start();
+    });
     await page.waitForTimeout(250);
     const m0 = await page.evaluate(() => window.__game.musicPlaying());
     await page.locator('#btn-pause').click();

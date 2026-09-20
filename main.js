@@ -17,6 +17,8 @@
   var LERP_SPEED = 18; // was 14 — snappier slide
   var BONUS_TTL = 7000; // bonus pickup lifetime (ms of play time)
   var BONUS_EVERY = 5; // spawn a bonus every N regular foods
+  var SHIELD_TTL = 9000; // shield pickup lifetime (ms of play time)
+  var SHIELD_EVERY = 7; // spawn a shield every N regular foods
   var COMBO_WINDOW = 5000; // eats within this gap chain the combo
   var FOODS_PER_LEVEL = 6; // goal: foods per level
   var OBSTACLE_START = 4; // rocks on a fresh obstacles run
@@ -50,6 +52,22 @@
     best = 0;
   var bonus = null,
     bonusLeft = 0; // bonus pickup {x,y} + ms of play time remaining
+  var shield = null,
+    shieldLeft = 0,
+    hasShield = false; // shield pickup {x,y} + TTL; hasShield = charge held
+  // Seeded runs (?seed=): gameplay spawns draw from rng() instead of
+  // Math.random so a shared link replays identical maps. Visual-only
+  // randomness (particles, decor, textures) stays unseeded on purpose.
+  var seedNum = null,
+    seedGen = null;
+  function rng() {
+    if (seedNum == null) return Math.random();
+    if (!seedGen) seedGen = SnakeLogic.mulberry32(seedNum);
+    return seedGen();
+  }
+  // Deep-link starting biome (?theme=): level-ups cycle LEVELS from here.
+  var startThemeIdx = 0;
+  var skinId = 'classic'; // active snake skin (achievement-gated)
   var combo = 0,
     lastEatAt = 0; // combo multiplier chain
   var deathCell = null; // crash-highlight cell {x,y}
@@ -59,7 +77,8 @@
     longest = 3; // run stats
   var squash = 0; // eat squash-and-stretch impulse 0..1
   var foodBornAt = 0,
-    bonusBornAt = 0; // spawn-pulse timestamps
+    bonusBornAt = 0,
+    shieldBornAt = 0; // spawn-pulse timestamps
   var seenTut = false; // first-run tutorial hint
   var tickMs = SPEED_PRESETS.normal;
   var acc = 0,
@@ -140,10 +159,11 @@
         lastOvReplay();
       } catch (e) {}
     }
+    if (typeof syncSkinOptions === 'function') syncSkinOptions();
   }
 
   // ---------- Lifetime stats + achievements (persisted) ----------
-  var life = { games: 0, foods: 0, bestCombo: 0, bestLevel: 1, wins: 0, prestige: 0 };
+  var life = { games: 0, foods: 0, bestCombo: 0, bestLevel: 1, wins: 0, prestige: 0, deathsBlocked: 0 };
   var ach = [];
   function loadLife() {
     try {
@@ -198,6 +218,7 @@
     if (ach.indexOf(id) >= 0) return;
     ach.push(id);
     saveLife();
+    syncSkinOptions(); // an achievement may have unlocked a skin
     var name = t('ach_' + id);
     toast(t('ach_t', { n: name }));
     announce(t('ach_t', { n: name }));
@@ -226,6 +247,7 @@
     'opt-speed',
     'opt-cam',
     'opt-swipe',
+    'opt-skin',
   ];
   function saveSettings() {
     var o = {};
@@ -282,6 +304,12 @@
       pc.hidden = combo < 2 || mini;
       if (combo >= 2) $('combo').textContent = 'x' + Math.min(combo, 5);
     }
+    // shield charge stays visible mid-run: it is a life, not a stat
+    var ps = $('pill-shield');
+    if (ps) {
+      ps.hidden = !hasShield;
+      ps.title = t('shield_hud');
+    }
   }
   // Combo: eats chained within COMBO_WINDOW raise the multiplier (capped at x5)
   function registerEat() {
@@ -328,6 +356,127 @@
     var el = $('opt-colorblind');
     return el && el.checked ? PALETTES.cb : PALETTES.standard;
   }
+  // Unlockable snake skins, gated on achievements (classic = palette colors).
+  // css mirrors the 3D hexes for the 2D fallback renderer.
+  var SKINS = [
+    { id: 'classic', ach: null },
+    {
+      id: 'abyss',
+      ach: 'level3',
+      head: 0x9d4edd,
+      headEm: 0x2a0a4a,
+      bodyA: 0x7b2cbf,
+      bodyAEm: 0x1c0533,
+      bodyB: 0x3c096c,
+      bodyBEm: 0x0d0221,
+      css: { head: '#9d4edd', body: ['#7b2cbf', '#3c096c'] },
+    },
+    {
+      id: 'ember',
+      ach: 'combo5',
+      head: 0xff8500,
+      headEm: 0x7a2e00,
+      bodyA: 0xdc2f02,
+      bodyAEm: 0x4d0f00,
+      bodyB: 0xffd60a,
+      bodyBEm: 0x6b4e00,
+      css: { head: '#ff8500', body: ['#dc2f02', '#ffd60a'] },
+    },
+    {
+      id: 'frost',
+      ach: 'space',
+      head: 0xcaf0f8,
+      headEm: 0x2a6f97,
+      bodyA: 0x90e0ef,
+      bodyAEm: 0x1d5f7a,
+      bodyB: 0x48cae4,
+      bodyBEm: 0x14495e,
+      css: { head: '#caf0f8', body: ['#90e0ef', '#48cae4'] },
+    },
+    {
+      id: 'gold',
+      ach: 'win',
+      head: 0xffd700,
+      headEm: 0x8a5f00,
+      bodyA: 0xdaa520,
+      bodyAEm: 0x5c3d00,
+      bodyB: 0xb8860b,
+      bodyBEm: 0x3d2b00,
+      css: { head: '#ffd700', body: ['#daa520', '#b8860b'] },
+    },
+    {
+      id: 'guardian',
+      ach: 'shield1',
+      head: 0x46e6ff,
+      headEm: 0x0a4a5a,
+      bodyA: 0x00b4d8,
+      bodyAEm: 0x07333f,
+      bodyB: 0x0077b6,
+      bodyBEm: 0x06283d,
+      css: { head: '#46e6ff', body: ['#00b4d8', '#0077b6'] },
+    },
+  ];
+  function skinById(id) {
+    for (var i = 0; i < SKINS.length; i++) if (SKINS[i].id === id) return SKINS[i];
+    return SKINS[0];
+  }
+  function skinUnlocked(sk) {
+    return !sk.ach || ach.indexOf(sk.ach) >= 0;
+  }
+  function activeSkin() {
+    var sk = skinById(skinId);
+    return skinUnlocked(sk) ? sk : SKINS[0];
+  }
+  // 2D fallback reads snake colors through here (palette, then skin override)
+  function snakeCss() {
+    var p = curPal().css;
+    var sk = activeSkin();
+    if (!sk.css) return { head: p.head, body: p.body };
+    return { head: sk.css.head, body: sk.css.body };
+  }
+  function applySkin() {
+    var sk = activeSkin();
+    if (sk.id !== skinId) {
+      skinId = sk.id;
+      var sel = $('opt-skin');
+      if (sel) sel.value = skinId;
+      saveSettings();
+    }
+    if (!sk.css) return; // classic: palette colors already applied
+    if (window.__matH) {
+      window.__matH.color.setHex(sk.head);
+      window.__matH.emissive.setHex(sk.headEm);
+      window.__matA.color.setHex(sk.bodyA);
+      window.__matA.emissive.setHex(sk.bodyAEm);
+      window.__matB.color.setHex(sk.bodyB);
+      window.__matB.emissive.setHex(sk.bodyBEm);
+    }
+    if (window.__trailMat) window.__trailMat.color.setHex(sk.head);
+    if (window.__headLight) window.__headLight.color.setHex(sk.head);
+  }
+  // Rebuilds the skin picker: locked skins stay visible but disabled, with
+  // the gating achievement named so players know what to chase.
+  function syncSkinOptions() {
+    var sel = $('opt-skin');
+    if (!sel) return;
+    // adopt a valid stored selection first (loadSettings ran before us)
+    var cur = skinById(sel.value);
+    if (cur && skinUnlocked(cur)) skinId = cur.id;
+    sel.innerHTML = '';
+    for (var i = 0; i < SKINS.length; i++) {
+      var sk = SKINS[i];
+      var o = document.createElement('option');
+      o.value = sk.id;
+      if (skinUnlocked(sk)) o.textContent = t('skin_' + sk.id);
+      else {
+        o.textContent = t('skin_locked', { n: t('ach_' + sk.ach) });
+        o.disabled = true;
+      }
+      sel.appendChild(o);
+    }
+    sel.value = activeSkin().id;
+    skinId = sel.value;
+  }
   function applyPalette() {
     var p = curPal();
     if (window.__matH) {
@@ -348,6 +497,7 @@
     }
     if (window.__trailMat) window.__trailMat.color.setHex(p.head);
     if (window.__headLight) window.__headLight.color.setHex(p.head);
+    applySkin(); // skins override the snake mats (classic = palette, no-op)
   }
   // Run stats line for game-over / win cards + screen readers
   function statsLine() {
@@ -424,6 +574,7 @@
   }
   function showMenuOv() {
     var m = menuCopy();
+    syncSkinOptions();
     showOverlay(m.title, m.sub, '', showMenuOv);
   }
   function menuCopy() {
@@ -447,7 +598,18 @@
       if (navigator.vibrate) navigator.vibrate(p);
     } catch (e) {}
   }
-  function shareScore() {
+  // Shareable deep link: same starting biome + seed replays the same map.
+  function linkForRun() {
+    try {
+      if (!/^https?:/.test(location.protocol)) return '';
+      var u = location.origin + location.pathname + '?theme=' + LEVELS[startThemeIdx].name.toLowerCase();
+      if (seedNum != null) u += '&seed=' + seedNum;
+      return u;
+    } catch (e) {
+      return '';
+    }
+  }
+  function shareText() {
     var txt =
       '3D Snake: ' +
       t('st_score') +
@@ -461,6 +623,12 @@
       t('st_longest') +
       ' ' +
       longest;
+    var link = linkForRun();
+    if (link) txt += ' ' + link;
+    return txt;
+  }
+  function shareScore() {
+    var txt = shareText();
     if (navigator.share) {
       try {
         var r = navigator.share({ title: '3D Snake', text: txt });
@@ -479,6 +647,159 @@
       toast(txt);
     }
   }
+  // Shareable moments: 1200x630 picture card (game frame + score bar) for
+  // game-over / new-best. WebGL buffers are only readable right after a
+  // render, so 3D capture is queued into the frame loop; 2D reads directly.
+  var shotPending = false,
+    shotCb = null,
+    lastShotURL = null,
+    shotReadyFlag = false;
+  function gameShotDataURL() {
+    try {
+      return canvas.toDataURL('image/png');
+    } catch (e) {
+      return null;
+    }
+  }
+  function snapFrame() {
+    if (!shotPending) return;
+    shotPending = false;
+    var cb = shotCb;
+    shotCb = null;
+    if (cb) cb(gameShotDataURL());
+  }
+  function dataURLtoBlob(u) {
+    try {
+      var parts = u.split(','),
+        mime = (parts[0].match(/:(.*?);/) || [])[1] || 'image/png';
+      var bin = atob(parts[1]),
+        arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return new Blob([arr], { type: mime });
+    } catch (e) {
+      return null;
+    }
+  }
+  function makeShot(cb) {
+    function compose(frameURL) {
+      try {
+        var W = 1200,
+          H = 630;
+        var out = document.createElement('canvas');
+        out.width = W;
+        out.height = H;
+        var x = out.getContext('2d');
+        x.fillStyle = '#0b1020';
+        x.fillRect(0, 0, W, H);
+        function bar() {
+          var g = x.createLinearGradient(0, H - 150, 0, H);
+          g.addColorStop(0, 'rgba(5,8,18,0)');
+          g.addColorStop(1, 'rgba(5,8,18,0.92)');
+          x.fillStyle = g;
+          x.fillRect(0, H - 150, W, 150);
+          x.fillStyle = '#fff';
+          x.font = '800 54px system-ui, sans-serif';
+          x.fillText('🐍 3D Snake — ' + score + ' pts', 48, H - 78);
+          x.font = '400 30px system-ui, sans-serif';
+          x.fillStyle = '#bcd';
+          var sub = t('st_best') + ' ' + best + ' · ' + t('st_level') + ' ' + level;
+          if (seedNum != null) sub += ' · ' + t('st_seed') + ' ' + seedNum;
+          x.fillText(LEVELS[themeIdx].name + ' ' + LEVELS[themeIdx].icon + '   ' + sub, 48, H - 30);
+        }
+        if (!frameURL) {
+          bar();
+          cb(out.toDataURL('image/png'));
+          return;
+        }
+        var img = new Image();
+        img.onload = function () {
+          try {
+            var s = Math.max(W / img.width, H / img.height);
+            var dw = img.width * s,
+              dh = img.height * s;
+            x.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+          } catch (e2) {}
+          bar();
+          try {
+            cb(out.toDataURL('image/png'));
+          } catch (e3) {
+            cb(null);
+          }
+        };
+        img.onerror = function () {
+          bar();
+          try {
+            cb(out.toDataURL('image/png'));
+          } catch (e4) {
+            cb(null);
+          }
+        };
+        img.src = frameURL;
+      } catch (e) {
+        cb(null);
+      }
+    }
+    if (mode === '3d') {
+      shotPending = true;
+      shotCb = compose; // runs after the next render, while the buffer is valid
+      setTimeout(function () {
+        if (shotCb) {
+          shotCb = null;
+          shotPending = false;
+          compose(gameShotDataURL());
+        }
+      }, 1500);
+    } else compose(gameShotDataURL());
+  }
+  function primeShot() {
+    shotReadyFlag = false;
+    try {
+      makeShot(function (u) {
+        if (u) {
+          lastShotURL = u;
+          shotReadyFlag = true;
+        }
+      });
+    } catch (e) {}
+  }
+  function deliverShot(u) {
+    if (!u) {
+      toast(t('shot_fail'));
+      return;
+    }
+    var f = null;
+    try {
+      var b = dataURLtoBlob(u);
+      if (b && typeof File === 'function')
+        f = new File([b], 'snake-' + score + '.png', { type: 'image/png' });
+    } catch (e) {
+      f = null;
+    }
+    if (f && navigator.share) {
+      try {
+        var r = navigator.share({ title: '3D Snake', text: shareText(), files: [f] });
+        if (r && r.catch)
+          r.catch(function () {
+            downloadFallback(u);
+          });
+        return;
+      } catch (e) {}
+    }
+    downloadFallback(u);
+  }
+  function downloadFallback(u) {
+    try {
+      var a = document.createElement('a');
+      a.href = u;
+      a.download = 'snake-' + score + '.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      toast(t('shot_saved'));
+    } catch (e) {
+      toast(t('shot_fail'));
+    }
+  }
   // Stat chips for overlay cards (screen readers get statsLine() instead)
   function chip(label, val) {
     return '<span class="chip"><i>' + label + '</i><b>' + val + '</b></span>';
@@ -486,7 +807,7 @@
   function statsChips() {
     var mins = Math.max(1 / 60, (performance.now() - runStartAt) / 60000);
     var rate = Math.round(foodsEaten / mins);
-    return (
+    var chips =
       chip(t('st_score'), score) +
       chip(t('st_best'), best) +
       chip(t('st_level'), level) +
@@ -494,8 +815,9 @@
       chip(t('st_foods'), foodsEaten) +
       chip(t('pill_goal'), (foodsEaten % FOODS_PER_LEVEL) + '/' + FOODS_PER_LEVEL) +
       chip(t('st_rate'), rate) +
-      chip(t('st_longest'), longest)
-    );
+      chip(t('st_longest'), longest);
+    if (seedNum != null) chips += chip(t('st_seed'), seedNum);
+    return chips;
   }
   // Center-screen milestone banner (level-ups, max combo)
   var bannerTimer = null;
@@ -761,8 +1083,23 @@
     musicStep = 0,
     nextNoteT = 0,
     musicGain = null;
-  var MUSIC_BPM = 112;
+  var MUSIC_BPM = 112; // fallback; each biome overrides via MUSICTHEMES
   var PENTA = [0, 3, 5, 7, 10, 12, 10, 7, 5, 3];
+  // Procedural voice per biome (order matches LEVELS): tempo, bass root
+  // shift (semitones from A2), melody scale, lead/bass waveforms.
+  var MUSICTHEMES = [
+    { bpm: 112, root: 0, scale: [0, 3, 5, 7, 10, 12, 10, 7, 5, 3], lead: 'triangle', bass: 'sine' }, // Meadow
+    { bpm: 96, root: -2, scale: [0, 1, 5, 7, 8, 12, 8, 7, 5, 1], lead: 'square', bass: 'triangle' }, // Desert
+    { bpm: 88, root: 3, scale: [0, 2, 4, 7, 9, 12, 9, 7, 4, 2], lead: 'sine', bass: 'sine' }, // Ocean
+    { bpm: 132, root: -4, scale: [0, 1, 5, 6, 8, 12, 8, 6, 5, 1], lead: 'sawtooth', bass: 'square' }, // Volcano
+    { bpm: 76, root: 5, scale: [0, 2, 5, 7, 9, 12, 9, 7, 5, 2], lead: 'sine', bass: 'triangle' }, // Space
+    { bpm: 104, root: -5, scale: [0, 3, 5, 7, 10, 12, 10, 7, 5, 3], lead: 'triangle', bass: 'sine' }, // Forest
+    { bpm: 92, root: 2, scale: [0, 2, 3, 7, 9, 12, 9, 7, 3, 2], lead: 'triangle', bass: 'sine' }, // Sunset
+    { bpm: 120, root: 7, scale: [0, 3, 5, 7, 10, 14, 10, 7, 5, 3], lead: 'sine', bass: 'sine' }, // Ice
+  ];
+  function musicTheme() {
+    return MUSICTHEMES[themeIdx] || MUSICTHEMES[0];
+  }
   function musicOn() {
     var el = $('opt-music');
     return !!(el && el.checked);
@@ -801,7 +1138,7 @@
       return;
     }
     try {
-      var stepDur = 60 / MUSIC_BPM / 2;
+      var stepDur = 60 / musicTheme().bpm / 2;
       while (nextNoteT < ctx.currentTime + 0.28) {
         playMusicStep(musicStep, nextNoteT, stepDur);
         nextNoteT += stepDur;
@@ -826,12 +1163,13 @@
       o.start(t);
       o.stop(t + durN + 0.02);
     }
-    var A2 = 110;
-    if (s % 8 === 0) note(A2, dur * 6, 'sine', 0.5);
-    if (s % 8 === 4) note(A2 * Math.pow(2, -5 / 12), dur * 5, 'sine', 0.4);
+    var th = musicTheme();
+    var A2 = 110 * Math.pow(2, th.root / 12);
+    if (s % 8 === 0) note(A2, dur * 6, th.bass, 0.5);
+    if (s % 8 === 4) note(A2 * Math.pow(2, -5 / 12), dur * 5, th.bass, 0.4);
     if (s % 2 === 0) {
-      var mel = PENTA[s % PENTA.length];
-      note((440 * Math.pow(2, mel / 12)) / 2, dur * 1.8, 'triangle', 0.32);
+      var mel = th.scale[s % th.scale.length];
+      note((440 * Math.pow(2, mel / 12) * Math.pow(2, th.root / 12)) / 2, dur * 1.8, th.lead, 0.32);
     }
   }
 
@@ -857,15 +1195,19 @@
     squash = 0;
     bonus = null;
     bonusLeft = 0;
+    hasShield = false;
+    seedGen = null; // fresh deterministic stream for seeded runs
     combo = 0;
     lastEatAt = 0;
     deathCell = null;
     obstacles = [];
     hideBonusMesh();
+    hideShieldMesh();
+    if (window.__shieldRing) window.__shieldRing.visible = false;
     if (window.__deathRing) window.__deathRing.visible = false;
     var fl = $('flash');
     if (fl) fl.classList.remove('show');
-    applyTheme(0);
+    applyTheme(startThemeIdx);
     spawnFood();
     if (obstaclesOn()) seedObstacles(OBSTACLE_START);
     syncSnakeMeshes(true);
@@ -882,6 +1224,7 @@
     for (var i = 0; i < snake.length; i++) o[snake[i].x + snake[i].y * GRID] = true;
     o[food.x + food.y * GRID] = true;
     if (bonus) o[bonus.x + bonus.y * GRID] = true;
+    if (shield) o[shield.x + shield.y * GRID] = true;
     for (var j = 0; j < obstacles.length; j++) o[obstacles[j].x + obstacles[j].y * GRID] = true;
     if (extra) o[extra.x + extra.y * GRID] = true;
     return o;
@@ -889,8 +1232,8 @@
   function freeCell(minHeadDist) {
     var occ = occupiedMap();
     for (var t = 0; t < 250; t++) {
-      var x = (Math.random() * GRID) | 0,
-        y = (Math.random() * GRID) | 0;
+      var x = (rng() * GRID) | 0,
+        y = (rng() * GRID) | 0;
       if (occ[x + y * GRID]) continue;
       if (minHeadDist && snake.length && Math.abs(x - snake[0].x) + Math.abs(y - snake[0].y) < minHeadDist)
         continue;
@@ -916,7 +1259,8 @@
     saveLife();
     checkAch();
     buzz([20, 30, 20]);
-    var L = applyTheme(n - 1);
+    var L = applyTheme(startThemeIdx + n - 1);
+    if (musicOn()) startMusic(); // adopt the new biome's voice immediately
     showBanner(t('banner_level', { n: n, biome: biomeName(L.name) + ' ' + L.icon }));
     toast(t('level_t', { n: n, biome: biomeName(L.name) }));
     beep(523, 1046, 0.18, 'sine');
@@ -925,7 +1269,7 @@
   }
   function spawnFood() {
     if (snake.length >= GRID * GRID) return false;
-    var c = SnakeLogic.findFree(occupiedMap(), GRID, Math.random, 300);
+    var c = SnakeLogic.findFree(occupiedMap(), GRID, rng, 300);
     if (!c) return false;
     food = c;
     placeFoodMesh();
@@ -979,19 +1323,23 @@
       nx = w.x;
       ny = w.y;
     } else if (!SnakeLogic.inBounds(np, GRID)) {
+      if (tryShield()) return;
       die(t('die_wall'), { x: nx, y: ny });
       return;
     }
     var willEat = nx === food.x && ny === food.y;
     var willEatBonus = !!(bonus && nx === bonus.x && ny === bonus.y);
+    var willEatShield = !!(shield && nx === shield.x && ny === shield.y);
     var willGrow = willEat || willEatBonus;
     var cell = { x: nx, y: ny };
     for (var oi = 0; oi < obstacles.length; oi++)
       if (obstacles[oi].x === nx && obstacles[oi].y === ny) {
+        if (tryShield()) return;
         die(t('die_ob'), cell);
         return;
       }
     if (SnakeLogic.hitsBody(cell, snake, willGrow)) {
+      if (tryShield()) return;
       die(t('die_self'), cell);
       return;
     }
@@ -1010,7 +1358,7 @@
       fx2d(nx, ny, '+' + gainedB, curPal().css.bonus);
       hideTut();
       var tb = gridToWorld(nx, ny);
-      burst({ x: tb.x, y: 0.7, z: tb.z });
+      burst({ x: tb.x, y: 0.7, z: tb.z }, 0xff5fa2, 16);
       beep(880, 1560, 0.16, 'square');
       hideBonusMesh();
       toast(t('bonus_ate', { n: gainedB }) + (multB > 1 ? ' (x' + multB + ')' : ''));
@@ -1040,7 +1388,7 @@
       var nl = SnakeLogic.levelFor(foodsEaten, FOODS_PER_LEVEL);
       if (nl > level) levelUp(nl);
       var gt = gridToWorld(nx, ny);
-      burst({ x: gt.x, y: 0.7, z: gt.z });
+      burst({ x: gt.x, y: 0.7, z: gt.z }, combo >= 3 ? 0xfff3a3 : 0xffc94d, Math.min(8 + combo * 2, 20));
       sfx.eat();
       tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
       if (snake.length >= GRID * GRID) {
@@ -1051,6 +1399,18 @@
       }
       spawnFood();
       if (!bonus && foodsEaten % BONUS_EVERY === 0) spawnBonus();
+      if (!shield && !hasShield && foodsEaten % SHIELD_EVERY === 0) spawnShield();
+    } else if (willEatShield) {
+      snake.pop(); // armor, not food: normal move, no growth
+      hasShield = true;
+      hideShieldMesh();
+      var gw = gridToWorld(nx, ny);
+      burst({ x: gw.x, y: 0.7, z: gw.z }, 0x46e6ff, 14);
+      sfx.eat();
+      buzz(20);
+      toast(t('shield_ate'));
+      announce(t('shield_ate'));
+      hideTut();
     } else snake.pop();
     syncSnakeMeshes();
     updateHUD();
@@ -1067,7 +1427,7 @@
       var cx = Math.max(0, Math.min(GRID - 1, deathCell.x));
       var cy = Math.max(0, Math.min(GRID - 1, deathCell.y));
       var w = gridToWorld(cx, cy);
-      burst({ x: w.x, y: 0.7, z: w.z });
+      burst({ x: w.x, y: 0.7, z: w.z }, 0xff2d55, 14);
       fx2d(cx, cy, null, '#ff2d55');
       if (window.__deathRing) {
         window.__deathRing.position.set(w.x, 0.06, w.z);
@@ -1096,7 +1456,14 @@
     var stats = statsLine();
     // dramatic beat: let shake + flash + marker land before the overlay
     var replayOver = function () {
-      showOverlay(t('over_t'), isBest ? msg + ' ' + t('newbest') : msg, statsChips(), replayOver);
+      var recap = t('recap_t', {
+        cause: msg,
+        biome: biomeName(LEVELS[themeIdx].name) + ' ' + LEVELS[themeIdx].icon,
+        score: score,
+        best: best,
+      });
+      showOverlay(t('over_t'), recap + (isBest ? ' ' + t('newbest') : ''), statsChips(), replayOver);
+      primeShot(); // share picture ready by the time the card is read
     };
     setTimeout(function () {
       if (state === 'over') replayOver();
@@ -1117,6 +1484,7 @@
     var stats = statsLine();
     var replayWin = function () {
       showOverlay(t('win_t'), t('win_s'), statsChips(), replayWin);
+      primeShot();
     };
     replayWin();
     announce(t('sr_win', { s: stats }));
@@ -1309,6 +1677,30 @@
   });
   onTap($('btn-prestige'), doPrestige);
   onTap($('btn-share'), shareScore);
+  onTap($('btn-shot'), function () {
+    if (lastShotURL) deliverShot(lastShotURL);
+    else
+      makeShot(function (u) {
+        if (u) {
+          lastShotURL = u;
+          shotReadyFlag = true;
+          deliverShot(u);
+        } else toast(t('shot_fail'));
+      });
+  });
+  // Service-worker update: the waiting worker activates, then we reload
+  // into the new version. The row is revealed by the registration script.
+  onTap($('btn-update'), function () {
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.controller)
+        navigator.serviceWorker.controller.postMessage({ type: 'SKIP_WAITING' });
+    } catch (e) {}
+    setTimeout(function () {
+      try {
+        location.reload();
+      } catch (e2) {}
+    }, 600);
+  });
   // PWA install: surfaced only when the browser fires beforeinstallprompt
   var deferredInstall = null;
   window.addEventListener('beforeinstallprompt', function (e) {
@@ -1348,6 +1740,16 @@
     if (el) el.addEventListener('change', syncModeSeg);
   });
   if ($('opt-colorblind')) $('opt-colorblind').addEventListener('change', applyPalette);
+  if ($('opt-skin'))
+    $('opt-skin').addEventListener('change', function (e) {
+      var sk = skinById(e.target.value);
+      if (skinUnlocked(sk)) {
+        skinId = sk.id;
+        saveSettings();
+        applySkin();
+        toast(t('skin_' + skinId));
+      } else syncSkinOptions(); // locked choice: snap back to the owned skin
+    });
   if ($('opt-music'))
     $('opt-music').addEventListener('change', function () {
       if (musicOn() && state === 'playing') startMusic();
@@ -1735,6 +2137,35 @@
     scene.add(window.__bonusMesh);
     window.__bonusLight = new THREE.PointLight(0xff5fa2, 1.1, 8);
     scene.add(window.__bonusLight);
+    // shield pickup: cyan icosahedron, hidden until spawned
+    window.__shieldMesh = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(0.42, 0),
+      new THREE.MeshStandardMaterial({
+        color: 0x46e6ff,
+        emissive: 0x0a4a5a,
+        emissiveIntensity: 1.2,
+        roughness: 0.25,
+      })
+    );
+    window.__shieldMesh.castShadow = true;
+    window.__shieldMesh.visible = false;
+    scene.add(window.__shieldMesh);
+    window.__shieldLight = new THREE.PointLight(0x46e6ff, 1.1, 8);
+    scene.add(window.__shieldLight);
+    // active-shield halo: follows the head while a charge is held
+    window.__shieldRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.55, 0.72, 40),
+      new THREE.MeshBasicMaterial({
+        color: 0x46e6ff,
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+      })
+    );
+    window.__shieldRing.rotation.x = -Math.PI / 2;
+    window.__shieldRing.position.y = 0.06;
+    window.__shieldRing.visible = false;
+    scene.add(window.__shieldRing);
     // crash marker: red pulsing ring, shown on death
     window.__deathRing = new THREE.Mesh(
       new THREE.RingGeometry(0.35, 0.62, 40),
@@ -1792,7 +2223,7 @@
     var partGeo = new THREE.SphereGeometry(0.09, 8, 8);
     var partMat = new THREE.MeshBasicMaterial({ color: 0xffd97a });
     for (var i = 0; i < 30; i++) {
-      var p = new THREE.Mesh(partGeo, partMat);
+      var p = new THREE.Mesh(partGeo, partMat.clone()); // own material: bursts tint per event
       p.visible = false;
       scene.add(p);
       particles.push({ m: p, v: new THREE.Vector3(), life: 0 });
@@ -2227,7 +2658,7 @@
   // Bonus pickup: rare, timed, worth 50 x combo. Never on snake or regular food.
   function spawnBonus() {
     if (bonus || snake.length >= GRID * GRID - 1) return false;
-    var c = SnakeLogic.findFree(occupiedMap(), GRID, Math.random, 200);
+    var c = SnakeLogic.findFree(occupiedMap(), GRID, rng, 200);
     if (!c) return false;
     bonus = c;
     bonusLeft = BONUS_TTL;
@@ -2255,17 +2686,64 @@
     bonusLeft = 0;
     if (window.__bonusMesh) window.__bonusMesh.visible = false;
   }
-  function burst(pos) {
+  // Shield pickup: rare, timed. Eating it holds one charge that survives
+  // the next lethal crash (the step is ignored, the snake holds position).
+  function spawnShield() {
+    if (shield || hasShield || snake.length >= GRID * GRID - 1) return false;
+    var c = SnakeLogic.findFree(occupiedMap(), GRID, rng, 200);
+    if (!c) return false;
+    shield = c;
+    shieldLeft = SHIELD_TTL;
+    shieldBornAt = performance.now();
+    placeShieldMesh();
+    toast(t('shield_spawn'));
+    return true;
+  }
+  function placeShieldMesh() {
+    if (mode !== '3d' || !window.__shieldMesh || !shield) return;
+    var t = gridToWorld(shield.x, shield.y);
+    window.__shieldMesh.position.set(t.x, 0.7, t.z);
+    window.__shieldMesh.scale.setScalar(0.01);
+    window.__shieldMesh.visible = true;
+    if (window.__shieldLight) window.__shieldLight.position.set(t.x, 1.8, t.z);
+  }
+  function hideShieldMesh() {
+    shield = null;
+    shieldLeft = 0;
+    if (window.__shieldMesh) window.__shieldMesh.visible = false;
+  }
+  // Lethal crash with a charge held: consume it, hold position, live on.
+  function tryShield() {
+    if (!hasShield) return false;
+    hasShield = false;
+    life.deathsBlocked = (life.deathsBlocked || 0) + 1;
+    saveLife();
+    unlock('shield1');
+    updateHUD();
+    var hw = gridToWorld(snake[0].x, snake[0].y);
+    burst({ x: hw.x, y: 0.7, z: hw.z }, 0x46e6ff, 20);
+    showBanner(t('shield_saved'));
+    toast(t('shield_saved'));
+    announce(t('shield_saved'));
+    beep(440, 880, 0.2, 'square');
+    buzz([40, 40, 40]);
+    return true;
+  }
+  function burst(pos, colorHex, count) {
     if (mode !== '3d' || reducedMotion) return;
+    var want = Math.max(1, Math.min(24, count || 10));
     var n = 0;
     for (var i = 0; i < particles.length; i++) {
       var p = particles[i];
       if (p.life > 0) continue;
       p.life = 0.5;
       p.m.visible = true;
+      try {
+        p.m.material.color.setHex(colorHex == null ? 0xffd97a : colorHex);
+      } catch (e) {}
       p.m.position.set(pos.x, pos.y, pos.z);
       p.v.set((Math.random() - 0.5) * 6, Math.random() * 5 + 2, (Math.random() - 0.5) * 6);
-      if (++n >= 10) break;
+      if (++n >= want) break;
     }
   }
   // Off-screen food arrow: the camera stays close and readable; when the food
@@ -2445,8 +2923,23 @@
         ctx2d.stroke();
       }
     }
+    if (shield) {
+      var sblink = shieldLeft > 2000 || Math.floor(performance.now() / 125) % 2 === 0;
+      if (sblink) {
+        ctx2d.fillStyle = '#46e6ff';
+        ctx2d.beginPath();
+        ctx2d.arc(ox + (shield.x + 0.5) * cell, oy + (shield.y + 0.5) * cell, cell * 0.42, 0, 7);
+        ctx2d.fill();
+        ctx2d.strokeStyle = '#fff';
+        ctx2d.lineWidth = 2;
+        ctx2d.beginPath();
+        ctx2d.arc(ox + (shield.x + 0.5) * cell, oy + (shield.y + 0.5) * cell, cell * 0.42, 0, 7);
+        ctx2d.stroke();
+      }
+    }
+    var sc2d = snakeCss();
     for (var s = snake.length - 1; s >= 0; s--) {
-      ctx2d.fillStyle = s === 0 ? pal.head : pal.body[s % 2];
+      ctx2d.fillStyle = s === 0 ? sc2d.head : sc2d.body[s % 2];
       var x = ox + snake[s].x * cell + 1,
         y = oy + snake[s].y * cell + 1;
       ctx2d.fillRect(x, y, cell - 2, cell - 2);
@@ -2559,6 +3052,10 @@
       bonusLeft -= dt * 1000;
       if (bonusLeft <= 0) hideBonusMesh();
     }
+    if (shield && state === 'playing') {
+      shieldLeft -= dt * 1000;
+      if (shieldLeft <= 0) hideShieldMesh();
+    }
 
     if (mode === '2d') {
       draw2D(dt);
@@ -2639,6 +3136,31 @@
       var ds = 1 + Math.sin(t * 10) * 0.15;
       window.__deathRing.scale.set(ds, ds, 1);
     }
+    // shield pickup motion + held-charge halo on the head
+    if (shield && window.__shieldMesh) {
+      var hAge = (now - shieldBornAt) / 350;
+      var hPop = hAge >= 1 ? 1 : Math.max(0.01, easeOutBack(Math.max(0, hAge)));
+      if (!reducedMotion) {
+        window.__shieldMesh.position.y = 0.7 + Math.sin(t * 4.2 + 1.3) * 0.14;
+        window.__shieldMesh.rotation.y = t * 2.4;
+        window.__shieldMesh.rotation.x = t * 1.1;
+        var hs2 = (1 + Math.sin(t * 5 + 1.3) * 0.1) * hPop;
+        window.__shieldMesh.scale.set(hs2, hs2, hs2);
+        window.__shieldMesh.visible = shieldLeft > 2000 || Math.floor(t * 8) % 2 === 0;
+      } else window.__shieldMesh.scale.setScalar(hPop);
+    }
+    if (window.__shieldRing && snakeMeshes.length) {
+      var showHalo = hasShield && state === 'playing';
+      window.__shieldRing.visible = showHalo;
+      if (showHalo) {
+        var shp = snakeMeshes[0].position;
+        window.__shieldRing.position.set(shp.x, 0.06, shp.z);
+        if (!reducedMotion) {
+          var shs = 1 + Math.sin(t * 6) * 0.08;
+          window.__shieldRing.scale.set(shs, shs, 1);
+        }
+      }
+    }
     for (var pi = 0; pi < particles.length; pi++) {
       var p = particles[pi];
       if (p.life <= 0) continue;
@@ -2675,6 +3197,7 @@
     );
     camera.lookAt(camTarget.x, 0, camTarget.z);
     renderer.render(scene, camera);
+    snapFrame(); // queued share-picture capture reads the fresh buffer here
   }
 
   // ---------- Test hooks (harmless in production; used by e2e) ----------
@@ -2740,6 +3263,7 @@
         bestCombo: life.bestCombo,
         bestLevel: life.bestLevel,
         prestige: life.prestige || 0,
+        deathsBlocked: life.deathsBlocked || 0,
       };
     },
     get ach() {
@@ -2803,6 +3327,41 @@
       bonusLeft = ttl || BONUS_TTL;
       placeBonusMesh();
     },
+    get shield() {
+      return shield ? { x: shield.x, y: shield.y } : null;
+    },
+    get hasShield() {
+      return hasShield;
+    },
+    setShield: function (x, y, ttl) {
+      shield = { x: x, y: y };
+      shieldLeft = ttl || SHIELD_TTL;
+      placeShieldMesh();
+    },
+    clearShield: function () {
+      hideShieldMesh();
+    },
+    get seed() {
+      return seedNum;
+    },
+    setSeed: function (n) {
+      seedNum = n == null ? null : parseInt(n, 10) || 0;
+      seedGen = null;
+    },
+    get skin() {
+      return skinId;
+    },
+    setSkin: function (id) {
+      var sk = skinById(id);
+      if (sk && skinUnlocked(sk)) {
+        skinId = sk.id;
+        applySkin();
+      }
+      return skinId;
+    },
+    get shotReady() {
+      return shotReadyFlag;
+    },
     clearBonus: function () {
       hideBonusMesh();
     },
@@ -2852,8 +3411,43 @@
     },
   };
 
+  // Deep links (?theme=&seed=): same starting biome + seed replays the
+  // same map and spawns. Unknown theme names and bad seeds are ignored.
+  function parseDeepLinks() {
+    var q = '';
+    try {
+      q = location.search || '';
+    } catch (e) {
+      q = '';
+    }
+    if (!q) return;
+    var m = q.match(/[?&]theme=([^&]*)/);
+    if (m) {
+      var name = '';
+      try {
+        name = decodeURIComponent(m[1]).toLowerCase();
+      } catch (e) {
+        name = '';
+      }
+      for (var i = 0; i < LEVELS.length; i++)
+        if (LEVELS[i].name.toLowerCase() === name) {
+          startThemeIdx = i;
+          break;
+        }
+    }
+    var s = q.match(/[?&]seed=(-?\d+)/);
+    if (s) {
+      var n = parseInt(s[1], 10);
+      if (isFinite(n)) {
+        seedNum = n;
+        seedGen = null;
+      }
+    }
+  }
+
   // ---------- Boot: settings first (shadows/speed feed 3D init), then 3D attempt, else 2D
   loadSettings();
+  parseDeepLinks();
   loadLife();
   applyDpad();
   applyI18n();

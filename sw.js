@@ -1,6 +1,6 @@
 /* 3D Snake service worker: cache-first so the game (including the
  * Three.js CDN) works offline after the first visit. */
-const CACHE = 'snake-v2';
+const CACHE = 'snake-v3';
 const LOCAL = [
   './',
   './index.html',
@@ -32,6 +32,9 @@ self.addEventListener('activate', (e) => {
       .then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+self.addEventListener('message', (e) => {
+  if (e && e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
 });
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;

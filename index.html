@@ -104,6 +104,7 @@
             <span class="pill combo" id="pill-combo" hidden title="Eat quickly to chain combos"
               ><span data-i18n="pill_combo">Combo</span> <b id="combo">x1</b></span
             >
+            <span class="pill" id="pill-shield" hidden title="Shield">🛡</span>
           </div>
         </div>
         <div class="hud-right">
@@ -197,6 +198,17 @@
                 <label class="toggle"
                   ><input type="checkbox" id="opt-dpad" /> <span data-i18n="set_buttons">Buttons</span></label
                 >
+                <label class="select"
+                  ><span data-i18n="set_skin">Snake skin</span>
+                  <select id="opt-skin">
+                    <option value="classic" selected data-i18n="skin_classic">Classic</option>
+                    <option value="abyss" data-i18n="skin_abyss">Abyss</option>
+                    <option value="ember" data-i18n="skin_ember">Ember</option>
+                    <option value="frost" data-i18n="skin_frost">Frost</option>
+                    <option value="gold" data-i18n="skin_gold">Gold</option>
+                    <option value="guardian" data-i18n="skin_guardian">Guardian</option>
+                  </select>
+                </label>
               </div>
             </div>
             <div class="set-group">
@@ -266,12 +278,17 @@
           </p>
           <div class="row" id="share-row" hidden>
             <button id="btn-share" class="btn" data-i18n="btn_share">📤 Share score</button>
+            <button id="btn-shot" class="btn" data-i18n="btn_shot">📸 Save picture</button>
           </div>
           <div class="row" id="prestige-row" hidden>
             <button id="btn-prestige" class="btn primary" data-i18n="prestige_btn">⭐ Prestige +10%</button>
           </div>
           <div class="row" id="install-row" hidden>
             <button id="btn-install" class="btn" data-i18n="install_btn">📲 Install game</button>
+          </div>
+          <div class="row" id="update-row" hidden>
+            <span data-i18n="update_t">A new version is ready.</span>
+            <button id="btn-update" class="btn primary" data-i18n="update_btn">↻ Refresh now</button>
           </div>
           <p class="hint">
             <span data-i18n="hint_goal">6 foods per level, new arena each level</span> &nbsp;•&nbsp;
@@ -363,7 +380,23 @@
     <script>
       if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
         window.addEventListener('load', function () {
-          navigator.serviceWorker.register('sw.js').catch(function () {});
+          navigator.serviceWorker
+            .register('sw.js')
+            .then(function (reg) {
+              function showUpdate() {
+                var r = document.getElementById('update-row');
+                if (r) r.hidden = false;
+              }
+              if (reg.waiting) showUpdate();
+              reg.addEventListener('updatefound', function () {
+                var nw = reg.installing;
+                if (!nw) return;
+                nw.addEventListener('statechange', function () {
+                  if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdate();
+                });
+              });
+            })
+            .catch(function () {});
         });
       }
     </script>

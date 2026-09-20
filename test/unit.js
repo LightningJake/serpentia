@@ -72,4 +72,25 @@ eq(L.fmtTime(0), '0:00', 'fmtTime zero');
 eq(L.fmtTime(65000), '1:05', 'fmtTime minute');
 eq(L.fmtTime(-5), '0:00', 'fmtTime clamps negative');
 
+// mulberry32: deterministic, in range, seed-sensitive
+var r1 = L.mulberry32(7),
+  r2 = L.mulberry32(7),
+  r3 = L.mulberry32(8);
+var seq1 = [r1(), r1(), r1()],
+  seq2 = [r2(), r2(), r2()];
+eq(seq1, seq2, 'mulberry32 same seed same sequence');
+eq(
+  seq1.every(function (v) {
+    return v >= 0 && v < 1;
+  }),
+  true,
+  'mulberry32 range [0,1)'
+);
+eq(r1() === r3() && seq1[0] === r3(), false, 'mulberry32 different seeds diverge');
+eq(
+  L.findFree({}, 20, L.mulberry32(1234), 300),
+  L.findFree({}, 20, L.mulberry32(1234), 300),
+  'findFree deterministic under seeded rng'
+);
+
 console.log('\n==== unit: ' + (process.exitCode ? 'FAILURES' : n + '/' + n + ' passed') + ' ====');

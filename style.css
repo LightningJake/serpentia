@@ -133,6 +133,15 @@ body {
 .pill.combo b {
   color: #ff7fb5;
 }
+#pill-shield {
+  border-color: rgba(70, 230, 255, 0.6);
+  box-shadow: 0 0 10px rgba(70, 230, 255, 0.45);
+}
+#update-row span {
+  align-self: center;
+  color: var(--muted);
+  font-size: 13px;
+}
 
 #flash {
   position: absolute;

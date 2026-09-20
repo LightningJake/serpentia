@@ -994,6 +994,134 @@ async function newPage(browser, blockCDN) {
     // Fullscreen control removed by design (game plays fine windowed)
     check('no fullscreen button', (await page.locator('#btn-fs').count()) === 0);
 
+    // ---- 7-feature round: recap, shot, shield, music voices, skins, links
+    // 1. death recap: cause + biome + score + best on the game-over card
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = false;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.setSnake([{ x: 19, y: 5 }]);
+      window.__game.setDir(1, 0);
+      window.__game.step();
+    });
+    await page.waitForTimeout(1400); // past the 1000ms overlay delay
+    const recap = (await page.locator('#ov-sub').textContent()) || '';
+    check(
+      'recap: cause + biome + score + best',
+      /wall/i.test(recap) && /Meadow/.test(recap) && /pts/.test(recap) && /Best/.test(recap),
+      recap
+    );
+    // 2. share picture primed on game over; the button delivers a file/toast
+    check('shot: primed on game over', await page.evaluate(() => window.__game.shotReady));
+    await page.locator('#btn-shot').click();
+    await page.waitForTimeout(500);
+    const shotToast = (await page.locator('#toast').textContent()) || '';
+    check('shot: button delivers picture', /Picture saved/.test(shotToast), shotToast);
+    // 3. shield: orb grants a charge, the charge blocks a wall death
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = false;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 5, y: 5 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setFood(0, 0); // park the food far away: the orb must be next
+      window.__game.setShield(6, 5, 9000);
+      window.__game.pause(); // resume: next tick eats the orb
+    });
+    await page.waitForFunction(() => window.__game.hasShield === true, null, { timeout: 5000 });
+    check('shield: orb grants charge', true);
+    check('shield: HUD pill shows', await page.locator('#pill-shield').isVisible());
+    await page.evaluate(() => {
+      window.__game.setSnake([{ x: 19, y: 5 }]);
+      window.__game.setDir(1, 0);
+    });
+    await page.waitForFunction(() => window.__game.hasShield === false, null, { timeout: 5000 });
+    const shieldLife = await g(page, 'life');
+    check(
+      'shield: blocks wall death, charge spent',
+      shieldLife.deathsBlocked >= 1 && (await g(page, 'hasShield')) === false,
+      JSON.stringify({ life: shieldLife })
+    );
+    // still pushing into the same wall with no charge left: the next tick kills
+    await page.waitForFunction(() => window.__game.state === 'over', null, { timeout: 5000 });
+    check('shield: single use — second crash kills', true);
+    check(
+      'shield: guardian achievement earned',
+      (await g(page, 'ach')).indexOf('shield1') >= 0,
+      JSON.stringify(await g(page, 'ach'))
+    );
+    // 4. per-biome music voices: all 8 keep the scheduler alive
+    // (wrap on: the run must survive unattended while voices switch)
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      window.__game.start();
+    });
+    let voicesOk = true;
+    for (let mi = 0; mi < 8; mi++) {
+      await page.evaluate((i) => window.__game.setTheme(i), mi);
+      await page.waitForTimeout(250);
+      if (!(await page.evaluate(() => window.__game.musicPlaying()))) voicesOk = false;
+    }
+    check('music: all 8 biome voices play', voicesOk);
+    // 5. skins: 6 options; guardian unlocked by the shield save above,
+    // gold stays locked (a real win is unreachable in tests)
+    const skinCount = await page.locator('#opt-skin option').count();
+    const skinStates = await page.evaluate(() => {
+      const out = {};
+      const opts = document.querySelectorAll('#opt-skin option');
+      for (let i = 0; i < opts.length; i++) out[opts[i].value] = !opts[i].disabled;
+      return out;
+    });
+    check(
+      'skins: picker reflects earned locks',
+      skinCount === 6 &&
+        skinStates.classic === true &&
+        skinStates.guardian === true &&
+        skinStates.gold !== true,
+      JSON.stringify({ count: skinCount, states: skinStates })
+    );
+    await page.evaluate(() => window.__game.setSkin('gold'));
+    check('skins: locked skin rejected', (await g(page, 'skin')) === 'classic');
+    await page.evaluate(() => window.__game.setSkin('guardian'));
+    check(
+      'skins: guardian applies cyan head',
+      (await g(page, 'skin')) === 'guardian' &&
+        (await page.evaluate(() => window.__matH.color.getHex())) === 0x46e6ff
+    );
+    await page.evaluate(() => window.__game.setSkin('classic'));
+    // 6. deep links: theme + seed from the URL, identical spawns across reloads
+    const linkUrl = 'http://127.0.0.1:' + PORT + '/index.html?theme=volcano&seed=7';
+    await page.goto(linkUrl, { waitUntil: 'load' });
+    await page.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
+      timeout: 25000,
+    });
+    check('link: theme param selects biome', (await g(page, 'theme')) === 'Volcano');
+    check('link: seed param arms deterministic rng', (await g(page, 'seed')) === 7);
+    await page.evaluate(() => {
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+    });
+    await page.waitForTimeout(300);
+    const foodA = await g(page, 'food');
+    await page.goto(linkUrl, { waitUntil: 'load' });
+    await page.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
+      timeout: 25000,
+    });
+    await page.evaluate(() => {
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+    });
+    await page.waitForTimeout(300);
+    const foodB = await g(page, 'food');
+    check(
+      'link: same seed, same first food',
+      foodA.x === foodB.x && foodA.y === foodB.y,
+      JSON.stringify({ a: foodA, b: foodB })
+    );
+    // 7. SW update row exists (revealed by real updates; hidden by default)
+    check('update: row hidden by default', await page.locator('#update-row').isHidden());
+
     check('no page errors in 3D session', errors.length === 0, errors.slice(0, 2).join(' | '));
     await page.close();
 
