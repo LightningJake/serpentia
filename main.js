@@ -354,15 +354,32 @@
     if (el) el.textContent = msg;
   }
   // toast + announce in one call, so the two can never drift apart again.
-  // A repeat of the previous message is skipped: polite live regions ignore
-  // identical text, so re-announcing is unreliable across readers. Pass
-  // force=true for a message that legitimately repeats.
+  // A repeat of the previous message is skipped UNLESS force is set. Note that
+  // force alone is not enough: writing the same string into a polite live
+  // region is ignored by screen readers, because nothing changed. A forced
+  // repeat therefore clears the region first and re-writes on the next frame,
+  // which is an actual change and is re-announced.
   var lastSaid = '';
+  var sayPending = 0;
   function say(msg, force) {
     toast(msg);
     if (force || msg !== lastSaid) {
       lastSaid = msg;
-      announce(msg);
+      var el = $('sr-status');
+      // Writing the same string into a polite live region is ignored by screen
+      // readers - nothing changed. A forced repeat must therefore clear the
+      // region and re-write it as a SEPARATE task, so the change is observable.
+      // requestAnimationFrame was not enough: both writes land in one frame and
+      // observers coalesce them into a single no-op mutation.
+      if (force && el && el.textContent === msg) {
+        var n = ++sayPending;
+        el.textContent = '';
+        setTimeout(function () {
+          if (n === sayPending) el.textContent = msg;
+        }, 60);
+      } else {
+        announce(msg);
+      }
     }
   }
   // Palettes: standard vs colorblind-safe (Okabe-Ito inspired)

@@ -1560,9 +1560,29 @@ async function newPage(browser, blockCDN) {
 
     // Screen readers must be told when an ember turns lethal: it is a visual
     // ring for sighted players and a silent death for everyone else.
-    const emberSr = await page.evaluate(async (EMBER_WARN) => {
-      const sr = () => document.getElementById('sr-status').textContent;
-      const before = sr();
+    // Assert on the EXACT ignite string from the page's own translations, not a
+    // loose /burning|keep clear/ regex: ember_first ("...then burn - keep clear!")
+    // matches that regex, so a stale region could satisfy the old assertion
+    // without the ignition ever being announced.
+    const EMBER_SR = await page.evaluate(async (EMBER_WARN) => {
+      const srEl = document.getElementById('sr-status');
+      const want = window.I18N.en.ember_ignite;
+      const first = window.I18N.en.ember_first;
+      // The region is shared with perf/game-state chatter, so a transient
+      // ignition can be overwritten before the next poll. Record EVERY write.
+      const seen = [];
+      let prev = '';
+      const mo = new MutationObserver(() => {
+        const v = srEl.textContent;
+        // record every write, INCLUDING a repeat of the previous value: a
+        // forced repeat announces by clearing then re-writing, and de-duping
+        // here would hide exactly the behaviour under test
+        if (v !== prev) {
+          prev = v;
+          seen.push(v);
+        }
+      });
+      mo.observe(srEl, { childList: true, characterData: true, subtree: true });
       document.getElementById('opt-wrap').checked = true;
       document.getElementById('opt-obstacles').checked = false;
       window.__game.start();
@@ -1573,39 +1593,48 @@ async function newPage(browser, blockCDN) {
       window.__game.clearEmbers();
       window.__game.setEmber(5, 5, EMBER_WARN - 40); // just below ignition
       window.__game.pause(); // resume so the age loop runs
-      // age it past EMBER_WARN (2000ms) on play time. Wait for the ember text
-      // specifically: other announcements (perf mode) share this region.
-      const hit = () => /burning|keep clear/i.test(sr());
       const t0 = Date.now();
-      while (Date.now() - t0 < 4000 && !hit()) {
-        await new Promise((r) => setTimeout(r, 100));
+      let spawned2 = false;
+      while (Date.now() - t0 < 6000) {
+        await new Promise((r) => setTimeout(r, 80));
+        const n = seen.filter((v) => v === want).length;
+        // a second, identical hazard: say() de-dupes repeats, so this only
+        // speaks if ignition is announced with force=true
+        if (n >= 1 && !spawned2) {
+          spawned2 = true;
+          window.__game.setEmber(6, 6, EMBER_WARN - 40);
+        }
+        if (n >= 2) break;
       }
-      return { before, after: sr(), hit: hit() };
+      mo.disconnect();
+      const hits = seen.filter((v) => v === want).length;
+      return {
+        want,
+        first,
+        hits,
+        sawFirst: seen.includes(first),
+        spawned2,
+        // the two writes must be separated by a clear, proving the repeat was
+        // an observable change rather than an ignored no-op rewrite
+        clearedBetween: (() => {
+          const i = seen.indexOf(want);
+          return i >= 0 && seen.slice(i + 1, seen.indexOf(want, i + 1)).includes('');
+        })(),
+        seen: seen.slice(-6),
+      };
     }, 2000);
     check(
       'a11y: ember ignition announced',
-      /burning|keep clear/i.test(emberSr.after),
-      JSON.stringify(emberSr)
+      EMBER_SR.hits >= 1 && !EMBER_SR.sawFirst,
+      JSON.stringify(EMBER_SR)
     );
-    // ...and repeated hazards still speak (the say() de-dupe must not swallow it)
-    const emberSr2 = await page.evaluate(async (EMBER_WARN) => {
-      const sr = () => document.getElementById('sr-status').textContent;
-      const hit = () => /burning|keep clear/i.test(sr());
-      window.__game.clearEmbers();
-      window.__game.setEmber(6, 6, EMBER_WARN - 40);
-      // wait for a NEW ignition (the live region may still hold the first one)
-      const t0 = Date.now();
-      let seen = 0;
-      while (Date.now() - t0 < 4000) {
-        if (hit()) {
-          seen++;
-          if (seen >= 2) break; // counted the stale one + the new one
-        }
-        await new Promise((r) => setTimeout(r, 80));
-      }
-      return sr();
-    }, 2000);
-    check('a11y: repeat ember still announced', /burning|keep clear/i.test(emberSr2), emberSr2);
+    // a second, identical hazard must still speak: say() de-dupes repeats, so
+    // ignition is announced with force=true
+    check(
+      'a11y: repeat ember still announced',
+      EMBER_SR.hits >= 2 && EMBER_SR.clearedBetween,
+      JSON.stringify(EMBER_SR)
+    );
     // 3+4. ambient cloud, food tints, wall builds, glyph map across all biomes
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = true;
