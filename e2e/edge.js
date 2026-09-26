@@ -175,6 +175,7 @@ async function launch() {
       window.__game.pause();
       window.__game.setSnake([{ x: 19, y: 5 }]);
       window.__game.setDir(1, 0);
+      window.__game.setFood(0, 0); // park far: a chance eat would ramp tickMs off 160
       window.__game.pause();
     });
     await page.waitForTimeout(400);

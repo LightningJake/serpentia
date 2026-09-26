@@ -36,15 +36,36 @@ for (const k of [...used].sort()) for (const l of langs) if (!blockHas(l, k)) mi
 if (missing.length) bad('i18n coverage', missing.join(', '));
 else good('i18n coverage (' + used.size + ' keys x ' + langs.length + ' langs)');
 
-// ---- 2. biome_* / ach_* keys for content defined in code
+// ---- 2. biome_* / ach_* / skin_* keys for content defined in code
+// These are built as t('prefix_' + id) at runtime, so the t() scan above
+// cannot see them: a dropped translation would render the literal key
+// ("skin_frost") in the picker with no test failing.
 const levelNames = [...main.matchAll(/name: '([A-Za-z]+)',\n\s*icon:/g)].map((m) => m[1]);
 const unlockIds = [...main.matchAll(/unlock\('([a-z0-9]+)'\)/g)].map((m) => m[1]);
+const skinIds = [
+  ...main
+    .slice(main.indexOf('var SKINS = ['), main.indexOf('function skinById'))
+    .matchAll(/\bid: '([a-z0-9]+)'/g),
+].map((m) => m[1]);
 const contentKeys = [
-  ...new Set([...levelNames.map((n) => 'biome_' + n), ...unlockIds.map((i) => 'ach_' + i)]),
+  ...new Set([
+    ...levelNames.map((n) => 'biome_' + n),
+    ...unlockIds.map((i) => 'ach_' + i),
+    ...skinIds.map((s) => 'skin_' + s),
+  ]),
 ];
 const missingContent = contentKeys.filter((k) => !blockHas('en', k));
 if (missingContent.length) bad('content keys', missingContent.join(', '));
-else good('content keys (biomes ' + levelNames.length + ', achievements ' + unlockIds.length + ')');
+else
+  good(
+    'content keys (biomes ' +
+      levelNames.length +
+      ', achievements ' +
+      unlockIds.length +
+      ', skins ' +
+      skinIds.length +
+      ')'
+  );
 
 // ---- 3. duplicate id="..." in HTML
 const ids = [...html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]);
@@ -67,7 +88,13 @@ const hookNames = new Set(
     ...hookSrc.matchAll(/^\s{4}(\w+): (?!function)[\w]+,/gm),
   ].flatMap((m) => [m[1]])
 );
-const e2eSrc = read('e2e/test.js') + read('e2e/mobile.js');
+// every suite, not just two: a typo'd hook in edge/resolutions/live/perf
+// would otherwise surface as a TypeError at runtime instead of a scan failure
+const e2eFiles = fs
+  .readdirSync(path.join(ROOT, 'e2e'))
+  .filter((f) => f.endsWith('.js'))
+  .map((f) => read('e2e/' + f));
+const e2eSrc = e2eFiles.join('\n');
 const usedHooks = new Set([...e2eSrc.matchAll(/__game\.(\w+)/g)].map((m) => m[1]));
 const missingHooks = [...usedHooks].filter((h) => !hookNames.has(h));
 if (missingHooks.length) bad('dangling __game hooks', missingHooks.join(', '));
@@ -91,11 +118,34 @@ const unwired = buttons.filter((id) => !new RegExp(`\\$\\('${id}'\\)`).test(main
 if (unwired.length) bad('unwired buttons', unwired.join(', '));
 else good('unwired buttons (' + buttons.length + ' wired)');
 
-// ---- 9. service-worker LOCAL assets exist on disk
-const swAssets = [...read('sw.js').matchAll(/'\.\/([^']+)'/g)].map((m) => m[1]);
+// ---- 9. service-worker precache: listed assets exist AND every browser asset
+//         is listed. The forward check alone let a newly shipped .js go
+//         un-precached, which only shows up as broken offline.
+const swSrc = read('sw.js');
+const swAssets = [...swSrc.matchAll(/'\.\/([^']*)'/g)].map((m) => m[1]);
 const missingAssets = swAssets.filter((a) => !fs.existsSync(path.join(ROOT, a === '' ? 'index.html' : a)));
 if (missingAssets.length) bad('sw assets', missingAssets.join(', '));
 else good('sw assets (' + swAssets.length + ' exist)');
+
+// shipped browser assets = what index.html pulls in + the SW itself
+const browserAssets = new Set(
+  [
+    ...[...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => m[1]),
+    ...[...html.matchAll(/<link[^>]+href="([^"]+)"/g)].map((m) => m[1]),
+  ]
+    .filter((u) => !/^https?:/.test(u) && u !== 'sw.js')
+    .map((u) => u.replace(/^\.\//, '').split('?')[0])
+    .filter((u) => /\.(js|css)$/.test(u))
+);
+const unprecached = [...browserAssets].filter((a) => !swAssets.includes(a));
+if (unprecached.length) bad('sw precache coverage', unprecached.join(', '));
+else good('sw precache covers all ' + browserAssets.size + ' browser assets');
+
+// ---- 9b. sw.js must not precache files that are never needed offline
+// (robots/sitemap/og-image each one a chance to fail the whole install)
+const offlineWaste = swAssets.filter((a) => /^(robots\.txt|sitemap\.xml|og-image)/.test(a));
+if (offlineWaste.length) bad('sw precache bloat', offlineWaste.join(', '));
+else good('sw precache has no offline-useless files');
 
 // ---- 10. manifest icon + start_url exist
 const manifest = JSON.parse(read('manifest.json'));

@@ -122,11 +122,7 @@ var mlEdge = L.mirrorLayout([[0, 0]], 20);
 eq(mlEdge.length, 4, 'mirrorLayout corner -> 4 distinct cells');
 var mlDedupe = L.mirrorLayout([[9, 9]], 20);
 eq(mlDedupe.length, 4, 'mirrorLayout near-center dedupes to 4');
-eq(
-  L.mirrorLayout([[25, 25]], 20),
-  [],
-  'mirrorLayout drops out-of-bounds base cells'
-);
+eq(L.mirrorLayout([[25, 25]], 20), [], 'mirrorLayout drops out-of-bounds base cells');
 
 // slideDir: ice momentum pipeline
 var R = { x: 1, y: 0 },

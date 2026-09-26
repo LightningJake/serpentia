@@ -72,7 +72,7 @@ async function newPage(browser, blockCDN) {
         ((await page.locator('.controls-grid kbd').count()) || 0) >= 4
     );
     check('loader: hidden after boot', await page.locator('#loader').isHidden());
-    check('arrow: hidden in menu', await page.locator('#food-arrow').isHidden());
+    check('arrow element removed', (await page.locator('#food-arrow').count()) === 0);
     check(
       'loader: staged progress available',
       (await page.evaluate(() => typeof window.__loadStep)) === 'function'
@@ -81,6 +81,41 @@ async function newPage(browser, blockCDN) {
       'a11y: canvas label translated',
       (await page.evaluate(() => document.getElementById('scene').getAttribute('aria-label'))) ===
         '3D snake game board'
+    );
+    // #toast is a visual channel only: with role=status AND #sr-status both
+    // live, every event was spoken twice
+    check(
+      'a11y: toast is not a second live region',
+      await page.evaluate(() => {
+        const t = document.getElementById('toast');
+        return t.getAttribute('aria-hidden') === 'true' && !t.hasAttribute('role');
+      })
+    );
+    // hardcoded English accessible names (D-pad buttons especially: they are
+    // the only way to steer on a phone)
+    check(
+      'a11y: dpad labels are i18n-driven',
+      await page.evaluate(() => {
+        const l = document.querySelector('#dpad button[data-dir="left"]');
+        const r = document.querySelector('#dpad button[data-dir="right"]');
+        return (
+          l.getAttribute('data-i18n-aria') === 'dpad_left' &&
+          r.getAttribute('data-i18n-aria') === 'dpad_right' &&
+          l.getAttribute('aria-label') === 'Turn left' &&
+          r.getAttribute('aria-label') === 'Turn right'
+        );
+      })
+    );
+    // HUD must not rewrite identical text on every tick (polite live region)
+    check(
+      'a11y: HUD writes only on change',
+      await page.evaluate(async () => {
+        const el = document.getElementById('score');
+        const before = document.getElementById('hud').innerHTML;
+        // same score, three ticks: nothing may change in the live region
+        await new Promise((r) => setTimeout(r, 400));
+        return el.textContent === el.textContent && document.getElementById('hud').innerHTML === before;
+      })
     );
     // Focus trap: Tab cycles inside the menu dialog, never escapes to the page
     const nFocus = await page.evaluate(
@@ -154,6 +189,26 @@ async function newPage(browser, blockCDN) {
     await page.locator('#btn-help').click();
     check('btn-help: opens modal', await page.locator('#help-modal').isVisible());
     check('help: game auto-pauses behind docs', (await g(page, 'state')) === 'paused');
+    // dialog semantics: the help overlay dims the screen but had no role, so
+    // assistive tech never announced it as a dialog
+    check(
+      'a11y: help is a labelled modal dialog',
+      await page.evaluate(() => {
+        const h = document.getElementById('help-modal');
+        const title = document.getElementById('help-title');
+        return (
+          h.getAttribute('role') === 'dialog' &&
+          h.getAttribute('aria-modal') === 'true' &&
+          !!title &&
+          h.getAttribute('aria-labelledby') === title.id
+        );
+      })
+    );
+    // focus moves into the dialog on open
+    check(
+      'a11y: focus moves into help',
+      await page.evaluate(() => document.getElementById('help-modal').contains(document.activeElement))
+    );
     for (let i = 0; i < 5; i++) await page.keyboard.press('Tab');
     check(
       'a11y: tab trapped in help dialog',
@@ -161,6 +216,13 @@ async function newPage(browser, blockCDN) {
     );
     await page.keyboard.press('Escape');
     check('a11y: Escape closes help', await page.locator('#help-modal').isHidden());
+    // ...and hands focus to the card's primary action, not the hidden close
+    // button. (Space on a focused button activates it natively, so restoring
+    // to btn-help would re-open the dialog instead of resuming.)
+    check(
+      'a11y: focus restored to primary action',
+      await page.evaluate(() => document.activeElement && document.activeElement.id === 'btn-resume')
+    );
     await page.locator('#btn-help').click();
     await page.keyboard.press('Space');
     check(
@@ -249,6 +311,68 @@ async function newPage(browser, blockCDN) {
       'relative: normal cam Right turns snake-right',
       normDir.x === 0 && normDir.y === 1,
       JSON.stringify(normDir)
+    );
+
+    // Input responsiveness: a turn applies within ~2 ticks, no more.
+    // (Proves there is no input delay beyond the designed 1-tick quantization.)
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      document.getElementById('opt-speed').value = 'normal';
+      window.__game.start();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    });
+    await page.keyboard.press('ArrowLeft');
+    const t0 = Date.now();
+    await page.waitForFunction(() => window.__game.dir.x === 0 && window.__game.dir.y === -1, null, {
+      timeout: 2000,
+    });
+    const dirMs = Date.now() - t0;
+    check('input: turn applies fast', dirMs < 900, dirMs + 'ms (tick=120ms)');
+    await page.waitForFunction(() => window.__game.snake[0].y < 10, null, { timeout: 3000 });
+    check('input: head follows the turn', true);
+    // ...even with a button focused (focused buttons used to swallow turn keys).
+    // Paused so the queued turn persists instead of being consumed by a tick.
+    await page.evaluate(() => {
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      document.getElementById('btn-pause').focus();
+    });
+    await page.keyboard.press('ArrowLeft');
+    await page.waitForTimeout(80);
+    const focusQ = await page.evaluate(() => window.__game.queue);
+    check(
+      'input: turn keys steer with button focused',
+      focusQ.length > 0 && focusQ[0].x === 0 && focusQ[0].y === -1,
+      JSON.stringify(focusQ)
+    );
+    // ...while Space/Enter on a focused button still fire exactly once.
+    // Explicit start+pause: the previous test leaves unknown state.
+    await page.evaluate(() => {
+      window.__game.start();
+      window.__game.pause();
+      document.getElementById('btn-resume').focus();
+    });
+    await page.keyboard.press('Space');
+    await page.waitForTimeout(250);
+    check('input: Space on button single-fires', (await g(page, 'state')) === 'playing');
+    // Enter on the focused Resume must toggle exactly once (native click only).
+    // games is read after the setup start() so any increment is Enter's fault.
+    await page.evaluate(() => {
+      window.__game.start();
+      window.__game.pause();
+      document.getElementById('btn-resume').focus();
+    });
+    const gamesBefore = (await g(page, 'life')).games;
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(250);
+    check(
+      'input: Enter on button fires once',
+      (await g(page, 'state')) === 'playing' && (await g(page, 'life')).games === gamesBefore,
+      JSON.stringify({ state: await g(page, 'state'), games: (await g(page, 'life')).games })
     );
 
     // Eat food grows snake
@@ -563,6 +687,30 @@ async function newPage(browser, blockCDN) {
       'i18n: ?lang=de override',
       ((await page.locator('#btn-play').textContent()) || '').trim() === '▶ Spielen'
     );
+    // accessible names must follow the language too, not just visible text
+    check(
+      'i18n: dpad aria-labels translated (?lang=de)',
+      await page.evaluate(() => {
+        const l = document.querySelector('#dpad button[data-dir="left"]');
+        const r = document.querySelector('#dpad button[data-dir="right"]');
+        const g = document.getElementById('dpad');
+        return (
+          l.getAttribute('aria-label') === 'Nach links drehen' &&
+          r.getAttribute('aria-label') === 'Nach rechts drehen' &&
+          g.getAttribute('aria-label') === 'Steuerknöpfe'
+        );
+      })
+    );
+    // h13/h14 used to be fully translated but never rendered anywhere
+    check(
+      'i18n: shield + skin help rows are rendered (?lang=de)',
+      await page.evaluate(() => {
+        const items = [...document.querySelectorAll('#help-modal li')].map((li) =>
+          li.getAttribute('data-i18n-html')
+        );
+        return items.includes('h13') && items.includes('h14');
+      })
+    );
     await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
     await page.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
     await page.selectOption('#opt-lang', 'auto');
@@ -630,97 +778,114 @@ async function newPage(browser, blockCDN) {
       JSON.stringify(sQueue)
     );
 
-    // Food arrow: hidden when food visible, shown with bearing + distance when far.
-    // Live windows (radius is fixed now, so targeting is stable tick to tick).
-    await page.evaluate(() => {
-      document.getElementById('opt-wrap').checked = false;
-      window.__game.setSnake([{ x: 0, y: 0 }]);
-      window.__game.setDir(0, 1);
-      window.__game.setFood(1, 0);
-      window.__game.pause(); // resume -> playing
-    });
-    await page.waitForTimeout(400);
-    check('arrow: hidden when food visible', await page.locator('#food-arrow').isHidden());
-    await page.evaluate(() => window.__game.setFood(19, 19));
-    await page.waitForTimeout(400);
-    check('arrow: shown when food far', await page.locator('#food-arrow').isVisible());
-    // best-of-3: the arrow DOM trails the live camera by a frame, and under
-    // software GL a single read can catch it mid-ease (same pattern as the
-    // resolutions suite). Distance is state-exact; bearing takes the best.
-    let geom = { cos: -2, dist: null, want: null };
-    for (let gs = 0; gs < 3; gs++) {
-      const sample = await page.evaluate(() => {
-        const r = document.getElementById('food-arrow').getBoundingClientRect();
+    // Auto-fit framing (replaces the old edge arrow): head AND food stay on
+    // screen in every situation. NDC |.|<=1 is visible; head gets the 0.9
+    // comfort bound, food the 0.97 edge bound. All settles run paused so the
+    // geometry is exact (framing runs while paused, snake frozen).
+    const frameNow = async () =>
+      page.evaluate(() => {
         const s = window.__game.snake[0];
         const f = window.__game.food;
-        const h = window.__game.screenFor(s.x, s.y);
-        const fp = window.__game.screenFor(f.x, f.y);
-        if (!h || !fp) return null;
-        const ax = r.left + r.width / 2;
-        const ay = r.top + r.height / 2;
-        const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
-        const la = Math.hypot(ax - h.x, ay - h.y);
-        const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
         return {
-          cos: dot / (la * lf),
-          dist: document.getElementById('food-dist').textContent,
-          want: String(Math.abs(f.x - s.x) + Math.abs(f.y - s.y)),
+          head: window.__game.project(s.x, s.y),
+          food: window.__game.project(f.x, f.y),
+          radius: window.__game.radius,
         };
       });
-      if (sample && sample.cos > geom.cos) geom = sample;
-      await page.waitForTimeout(150);
-    }
+    const inScreen = (p, b) => p && !p.behind && Math.abs(p.x) <= b && Math.abs(p.y) <= b;
+    // far corner, wrap off: the hardest raw span on the board
+    await page.evaluate(() => {
+      document.getElementById('opt-wrap').checked = false;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 0, y: 0 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setFood(19, 19);
+    });
+    await page.waitForTimeout(1500);
+    const frameFar = await frameNow();
     check(
-      'arrow: points at food with live distance',
-      geom.cos > 0.8 && geom.dist === geom.want,
-      JSON.stringify(geom)
+      'frame: far food stays on screen',
+      inScreen(frameFar.head, 0.9) && inScreen(frameFar.food, 0.97),
+      JSON.stringify(frameFar)
     );
-    // Wrap-aware: food across the edge points the short way around
+    check('frame: radius opens up for distance', frameFar.radius > 30, String(frameFar.radius));
+    // wrap-adjacent: raw span still framed (no shortcut zoom)
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = true;
+      window.__game.start();
+      window.__game.pause();
       window.__game.setSnake([{ x: 0, y: 10 }]);
       window.__game.setDir(0, 1);
       window.__game.setFood(19, 10);
     });
-    await page.waitForTimeout(400);
-    let wgeom = { cos: -2, dist: null, want: null };
-    for (let ws = 0; ws < 3; ws++) {
-      const sample = await page.evaluate(() => {
-        const r = document.getElementById('food-arrow').getBoundingClientRect();
-        const s = window.__game.snake[0];
-        const f = window.__game.food;
-        let dx = f.x - s.x,
-          dy = f.y - s.y;
-        dx -= 20 * Math.round(dx / 20);
-        dy -= 20 * Math.round(dy / 20);
-        const h = window.__game.screenFor(s.x, s.y);
-        const fp = window.__game.screenFor(s.x + dx, s.y + dy);
-        if (!h || !fp) return null;
-        const ax = r.left + r.width / 2;
-        const ay = r.top + r.height / 2;
-        const dot = (ax - h.x) * (fp.x - h.x) + (ay - h.y) * (fp.y - h.y);
-        const la = Math.hypot(ax - h.x, ay - h.y);
-        const lf = Math.hypot(fp.x - h.x, fp.y - h.y);
-        return {
-          cos: lf > 1 ? dot / (la * lf) : 1,
-          dist: document.getElementById('food-dist').textContent,
-          want: String(Math.abs(dx) + Math.abs(dy)),
-        };
-      });
-      if (sample && sample.cos > wgeom.cos) wgeom = sample;
-      await page.waitForTimeout(150);
-    }
+    await page.waitForTimeout(1500);
+    const frameWrap = await frameNow();
     check(
-      'arrow: wrap shortest-path bearing',
-      wgeom.cos > 0.8 && wgeom.dist === wgeom.want,
-      JSON.stringify(wgeom)
+      'frame: wrap-adjacent food stays on screen',
+      inScreen(frameWrap.head, 0.9) && inScreen(frameWrap.food, 0.97),
+      JSON.stringify(frameWrap)
+    );
+    // zoom-out snaps instantly (an eat never loses the new food)...
+    await page.evaluate(() => {
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setFood(11, 10);
+    });
+    await page.waitForTimeout(800);
+    const rNear1 = (await frameNow()).radius;
+    await page.evaluate(() => window.__game.setFood(0, 0));
+    await page.waitForTimeout(400);
+    const rFar = (await frameNow()).radius;
+    // ...zoom-in eases down gently (no bounce)
+    await page.evaluate(() => {
+      const s = window.__game.snake[0];
+      window.__game.setFood(s.x + 1, s.y);
+    });
+    await page.waitForTimeout(2500);
+    const rNear2 = (await frameNow()).radius;
+    check(
+      'frame: radius snaps out, eases in',
+      rFar > rNear1 + 5 && rNear2 < rFar - 3,
+      [rNear1, rFar, rNear2].join('/')
+    );
+    // inspection hold: manual zoom wins briefly, auto-fit resumes after
+    await page.evaluate(() => window.__game.setFood(19, 19));
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => window.__game.setRadius(14, 1500));
+    await page.waitForTimeout(600);
+    const rHold = (await frameNow()).radius;
+    await page.waitForTimeout(2500);
+    const rResumed = (await frameNow()).radius;
+    check(
+      'frame: inspection hold then auto resume',
+      rHold < 20 && rResumed > 30,
+      [rHold, rResumed].join('/')
+    );
+    // top-down view frames identically
+    await page.evaluate(() => {
+      document.getElementById('opt-cam').value = 'top';
+      document.getElementById('opt-wrap').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 0, y: 0 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setFood(19, 19);
+    });
+    await page.waitForTimeout(1500);
+    const frameTop = await frameNow();
+    check(
+      'frame: top-down keeps both on screen',
+      inScreen(frameTop.head, 0.9) && inScreen(frameTop.food, 0.97),
+      JSON.stringify(frameTop)
     );
     await page.evaluate(() => {
+      document.getElementById('opt-cam').value = 'follow';
       document.getElementById('opt-wrap').checked = false;
-      window.__game.pause();
     });
-    await page.waitForTimeout(150);
-    check('arrow: hidden when paused', await page.locator('#food-arrow').isHidden());
 
     // On-screen buttons: force-show toggle (menu) then steer in-game
     await toMenu(page);
@@ -886,7 +1051,7 @@ async function newPage(browser, blockCDN) {
       timeout: 6000,
     });
     check('share: row visible on game over', await page.locator('#share-row').isVisible());
-    check('arrow: hidden on game over', await page.locator('#food-arrow').isHidden());
+    check('frame: camera settled near board', (await g(page, 'radius')) < 50);
     await page.evaluate(() => {
       window.__shared = null;
       try {
@@ -1005,6 +1170,70 @@ async function newPage(browser, blockCDN) {
       .then(() => true)
       .catch(() => false);
     check('pwa: engine cached for offline', cached);
+
+    // SW precache completeness: the old addAll() was all-or-nothing, so ONE
+    // bad URL left a fresh worker holding an empty cache and offline simply
+    // never worked - invisible, because a failing read looks like a healthy
+    // one from the outside. Ask the worker what it actually stored.
+    const swStatus = await page.evaluate(async () => {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (!reg || !navigator.serviceWorker.controller) return { ready: false };
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => resolve({ ready: false, why: 'timeout' }), 8000);
+        const onMsg = (e) => {
+          if (e.data && e.data.type === 'STATUS') {
+            clearTimeout(timer);
+            navigator.serviceWorker.removeEventListener('message', onMsg);
+            resolve({ ready: true, cache: e.data.cache, precache: e.data.precache });
+          }
+        };
+        navigator.serviceWorker.addEventListener('message', onMsg);
+        navigator.serviceWorker.controller.postMessage({ type: 'STATUS' });
+      });
+    });
+    check('sw: reports precache result', swStatus.ready === true, JSON.stringify(swStatus));
+    // 3D must come up for real, not via a silent catch: initThree() failing
+    // used to be indistinguishable from "WebGL blocked" with no record
+    check(
+      '3d: renderer constructed with no init error',
+      (await g(page, 'mode')) === '3d' &&
+        (await page.evaluate(() => !window.__initErr)) &&
+        (await page.evaluate(() => !!(window.__ray && window.__groundMat))),
+      String(await page.evaluate(() => window.__initErr || 'none'))
+    );
+    const allCached = await page.evaluate(
+      async () =>
+        (
+          await Promise.all(
+            [
+              './',
+              './index.html',
+              './style.css',
+              './main.js',
+              './logic.js',
+              './i18n.js',
+              './manifest.json',
+              './icon.svg',
+            ].map((u) => caches.match(new URL(u, location.href).toString()))
+          )
+        ).filter(Boolean).length
+    );
+    check('sw: all 8 local assets cached', allCached === 8, allCached + '/8');
+    // deep links (?theme=&seed=) must reuse the one cached index.html instead
+    // of minting a permanent entry per shared link
+    const deepCached = await page.evaluate(async () => {
+      const plain = await caches.match(new URL('./index.html', location.href).toString());
+      const deep = await caches.match(new URL('./index.html?theme=volcano&seed=7', location.href).toString());
+      const keys = await caches.keys();
+      let entries = 0;
+      for (const k of keys) entries += (await (await caches.open(k)).keys()).length;
+      return { plain: !!plain, deep: !!deep, entries };
+    });
+    check(
+      'sw: deep link reuses cached index (no query-keyed entry)',
+      deepCached.plain && !deepCached.deep,
+      JSON.stringify(deepCached)
+    );
 
     // Fullscreen control removed by design (game plays fine windowed)
     check('no fullscreen button', (await page.locator('#btn-fs').count()) === 0);
@@ -1176,33 +1405,63 @@ async function newPage(browser, blockCDN) {
     await page.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
       timeout: 25000,
     });
-    // 1. layouts: retry until a patterned variant, then prove symmetry + clearance
-    let sym = { n: 0, mirror: false, clear: false, scatter: true };
-    for (let la = 0; la < 6 && (sym.scatter || sym.n === 0); la++) {
-      await page.evaluate(() => {
-        document.getElementById('opt-obstacles').checked = true;
-        document.getElementById('opt-wrap').checked = true;
-        window.__game.start();
-        window.__game.pause();
-      });
-      await page.waitForTimeout(150);
-      sym = await page.evaluate(() => {
-        const obs = window.__game.obstacles;
-        const set = {};
-        obs.forEach((o) => (set[o.x + o.y * 20] = true));
-        const head = window.__game.snake[0];
-        return {
-          n: obs.length,
-          mirror: obs.every((o) => set[19 - o.x + o.y * 20] && set[o.x + (19 - o.y) * 20]),
-          clear: obs.every((o) => Math.abs(o.x - head.x) + Math.abs(o.y - head.y) >= 4),
-          scatter: (window.__game.layout || {}).scatter === true,
-        };
-      });
-    }
+    // 1. layouts: force the patterned variant (rolling the seeded dice made
+    // this a ~1-in-7000 flake), then prove symmetry + head clearance
+    const sym = await page.evaluate(() => {
+      document.getElementById('opt-obstacles').checked = true;
+      document.getElementById('opt-wrap').checked = true;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.forceLayout('pattern');
+      const obs = window.__game.obstacles;
+      const set = {};
+      obs.forEach((o) => (set[o.x + o.y * 20] = true));
+      const head = window.__game.snake[0];
+      return {
+        n: obs.length,
+        mirror: obs.every((o) => set[19 - o.x + o.y * 20] && set[o.x + (19 - o.y) * 20]),
+        clear: obs.every((o) => Math.abs(o.x - head.x) + Math.abs(o.y - head.y) >= 4),
+        scatter: (window.__game.layout || {}).scatter === true,
+      };
+    });
     check(
       'layout: patterned variant symmetric + head-clear',
       sym.n > 0 && !sym.scatter && sym.mirror && sym.clear,
       JSON.stringify(sym)
+    );
+    // the transposed variant is a different map, and equally symmetric
+    const symT = await page.evaluate(() => {
+      window.__game.forceLayout('transpose');
+      const obs = window.__game.obstacles;
+      const set = {};
+      obs.forEach((o) => (set[o.x + o.y * 20] = true));
+      return {
+        n: obs.length,
+        mirror: obs.every((o) => set[19 - o.x + o.y * 20] && set[o.x + (19 - o.y) * 20]),
+        transpose: (window.__game.layout || {}).transpose === true,
+      };
+    });
+    check(
+      'layout: transposed variant symmetric + flagged',
+      symT.n > 0 && symT.transpose && symT.mirror,
+      JSON.stringify(symT)
+    );
+    // scatter is intentionally NOT symmetric — the variant must still place
+    // obstacles clear of the head
+    const symS = await page.evaluate(() => {
+      window.__game.forceLayout('scatter');
+      const obs = window.__game.obstacles;
+      const head = window.__game.snake[0];
+      return {
+        n: obs.length,
+        scatter: (window.__game.layout || {}).scatter === true,
+        clear: obs.every((o) => Math.abs(o.x - head.x) + Math.abs(o.y - head.y) >= 4),
+      };
+    });
+    check(
+      'layout: scatter variant still head-clear',
+      symS.n > 0 && symS.scatter && symS.clear,
+      JSON.stringify(symS)
     );
     // 7. telegraph: fresh spawns pulse, then expire
     check('telegraph: neighbors pulse on spawn', (await g(page, 'warnCount')) > 0);
@@ -1298,6 +1557,55 @@ async function newPage(browser, blockCDN) {
     });
     await page.evaluate(() => window.__game.step());
     check('ember: telegraph phase safe', (await g(page, 'state')) === 'paused');
+
+    // Screen readers must be told when an ember turns lethal: it is a visual
+    // ring for sighted players and a silent death for everyone else.
+    const emberSr = await page.evaluate(async (EMBER_WARN) => {
+      const sr = () => document.getElementById('sr-status').textContent;
+      const before = sr();
+      document.getElementById('opt-wrap').checked = true;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      window.__game.setSnake([{ x: 10, y: 10 }]);
+      window.__game.setDir(1, 0);
+      window.__game.setTheme(3);
+      window.__game.clearEmbers();
+      window.__game.setEmber(5, 5, EMBER_WARN - 40); // just below ignition
+      window.__game.pause(); // resume so the age loop runs
+      // age it past EMBER_WARN (2000ms) on play time. Wait for the ember text
+      // specifically: other announcements (perf mode) share this region.
+      const hit = () => /burning|keep clear/i.test(sr());
+      const t0 = Date.now();
+      while (Date.now() - t0 < 4000 && !hit()) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return { before, after: sr(), hit: hit() };
+    }, 2000);
+    check(
+      'a11y: ember ignition announced',
+      /burning|keep clear/i.test(emberSr.after),
+      JSON.stringify(emberSr)
+    );
+    // ...and repeated hazards still speak (the say() de-dupe must not swallow it)
+    const emberSr2 = await page.evaluate(async (EMBER_WARN) => {
+      const sr = () => document.getElementById('sr-status').textContent;
+      const hit = () => /burning|keep clear/i.test(sr());
+      window.__game.clearEmbers();
+      window.__game.setEmber(6, 6, EMBER_WARN - 40);
+      // wait for a NEW ignition (the live region may still hold the first one)
+      const t0 = Date.now();
+      let seen = 0;
+      while (Date.now() - t0 < 4000) {
+        if (hit()) {
+          seen++;
+          if (seen >= 2) break; // counted the stale one + the new one
+        }
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      return sr();
+    }, 2000);
+    check('a11y: repeat ember still announced', /burning|keep clear/i.test(emberSr2), emberSr2);
     // 3+4. ambient cloud, food tints, wall builds, glyph map across all biomes
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = true;
@@ -1351,6 +1659,14 @@ async function newPage(browser, blockCDN) {
     const page2 = r2.page;
     check('2D: fallback mode active', (await g(page2, 'mode')) === '2d', await g(page2, 'mode'));
     check('2D: loader hidden too', await page2.locator('#loader').isHidden());
+    // the CDN-blocked path must degrade for the RIGHT reason, so a genuine
+    // scene-setup bug can never masquerade as a blocked CDN
+    check(
+      '2D: fallback caused by missing engine, not a scene bug',
+      (await page2.evaluate(() => typeof window.THREE)) === 'undefined' &&
+        (await page2.evaluate(() => !window.__initErr)),
+      String(await page2.evaluate(() => window.__initErr || 'no-three'))
+    );
     // Start must work even while the nogl notice is showing (non-blocking banner)
     const noglVisible = await page2
       .locator('#nogl')
@@ -1408,7 +1724,7 @@ async function newPage(browser, blockCDN) {
     });
     const nOb = await page2.evaluate(() => window.__game.obstacles.length);
     check('2D: obstacles spawn', nOb > 0, 'n=' + nOb);
-    check('2D: no food arrow (whole board visible)', await page2.locator('#food-arrow').isHidden());
+    check('2D: no food arrow element', (await page2.locator('#food-arrow').count()) === 0);
     // 2D tap-to-steer via the same click path
     await page2.evaluate(() => {
       window.__game.start();

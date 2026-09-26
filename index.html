@@ -2,10 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>3D Snake — Three.js</title>
     <meta name="theme-color" content="#070b18" />
     <meta
@@ -82,7 +79,9 @@
       </div>
       <canvas id="scene" aria-label="3D snake game board"></canvas>
 
-      <header id="hud" aria-live="polite">
+      <!-- live region: updateHUD() writes only on value change, so this does
+           not re-announce the HUD on every tick -->
+      <header id="hud" aria-live="polite" aria-atomic="false">
         <div class="hud-left">
           <div class="logo">🐍 3D SNAKE</div>
           <div class="stats">
@@ -128,7 +127,13 @@
           <div id="settings-panel">
             <div class="set-group">
               <h4 data-i18n="sec_mode">Mode</h4>
-              <div class="seg" id="mode-seg" role="radiogroup" aria-label="Game mode">
+              <div
+                class="seg"
+                id="mode-seg"
+                role="radiogroup"
+                data-i18n-aria="aria_mode"
+                aria-label="Game mode"
+              >
                 <button
                   type="button"
                   data-mode="classic"
@@ -248,7 +253,7 @@
               </div>
             </div>
           </div>
-          <div class="controls-grid" aria-label="How to steer">
+          <div class="controls-grid" data-i18n-aria="ctl_steer" aria-label="How to steer">
             <div>
               🖱️
               <span
@@ -297,9 +302,9 @@
         </div>
       </div>
 
-      <div id="help-modal" hidden>
+      <div id="help-modal" hidden role="dialog" aria-modal="true" aria-labelledby="help-title">
         <div class="card">
-          <h2 data-i18n="help_title">How to play & edge cases</h2>
+          <h2 id="help-title" data-i18n="help_title">How to play & edge cases</h2>
           <ul>
             <li data-i18n-html="h1">
               <b>Easiest:</b> click or tap the board where you want the snake to go.
@@ -334,7 +339,8 @@
               stacks forever.
             </li>
             <li data-i18n-html="h12">
-              A <b>green arrow</b> at the screen edge always points to the food, with the distance in cells.
+              The <b>camera always frames both you and the food</b> — it zooms out as they drift apart. Wheel
+              / pinch zooms freely for a few seconds, then framing resumes.
             </li>
             <li data-i18n-html="h15">
               Terrain rules: <b>🧊 Ice</b> is slippery (turns land one cell later), <b>🏜️ Desert</b> food
@@ -344,18 +350,26 @@
               Obstacle layouts are <b>hand-designed and symmetric</b> per arena (a scatter variant appears
               sometimes); fresh blocks pulse <b>orange</b> before they can kill.
             </li>
+            <li data-i18n-html="h13">
+              A cyan <b>🛡 shield orb</b> sometimes appears — grab it to survive your next crash.
+            </li>
+            <li data-i18n-html="h14">
+              Unlock <b>snake skins</b> with achievements (see the Look &amp; feel settings). Links like
+              <b>?theme=volcano&amp;seed=7</b> replay the same map and spawns.
+            </li>
           </ul>
           <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">Got it</button>
         </div>
       </div>
 
-      <div id="dpad" aria-label="Turn controls">
-        <button data-dir="left" aria-label="Turn left">◀</button>
-        <button data-dir="right" aria-label="Turn right">▶</button>
+      <div id="dpad" role="group" data-i18n-aria="dpad_controls" aria-label="Turn controls">
+        <button data-dir="left" data-i18n-aria="dpad_left" aria-label="Turn left">◀</button>
+        <button data-dir="right" data-i18n-aria="dpad_right" aria-label="Turn right">▶</button>
       </div>
 
-      <div id="toast" role="status"></div>
-      <div id="food-arrow" hidden aria-hidden="true"><span>▲</span><span id="food-dist">0</span></div>
+      <!-- visual only: #sr-status is the single live region, so events are
+           spoken exactly once (a second live region double-announced them) -->
+      <div id="toast" aria-hidden="true"></div>
       <div id="banner" aria-hidden="true"></div>
       <div id="hint" hidden data-i18n-html="hint_tut">
         👉 <b>Click the board</b> where you want to go — or use Arrows / swipe!
@@ -373,14 +387,26 @@
     </div>
     <noscript><p style="padding: 2rem">This game needs JavaScript.</p></noscript>
     <script>
+      // Last-resort error surface. Runs before main.js exists, so it cannot
+      // call toast(): it reuses the same element but drives its own removal
+      // timer. Without that, the FIRST uncaught error pinned this pill to the
+      // screen forever and overwrote every later gameplay toast.
+      window.__errShown = 0;
       window.addEventListener(
         'error',
         function (e) {
           var t = document.getElementById('toast');
-          if (t && e && e.message) {
-            t.textContent = 'Error: ' + e.message;
-            t.classList.add('show');
-          }
+          if (!t || !e || !e.message) return;
+          // one message per 4s: a failing resource can fire many events and
+          // would otherwise thrash the toast + restart the timer endlessly
+          var now = Date.now();
+          if (now - window.__errShown < 4000) return;
+          window.__errShown = now;
+          t.textContent = 'Error: ' + e.message;
+          t.classList.add('show');
+          setTimeout(function () {
+            t.classList.remove('show');
+          }, 4000);
         },
         true
       );

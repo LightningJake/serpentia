@@ -1,6 +1,7 @@
 /* Resolutions matrix: real 2025-2026 phone/tablet/desktop viewports (CSS px).
- * Asserts head+food stay on screen (the framing-camera guarantee), grabs a
- * screenshot per device into .test-shots/ for eyeballing, fails on any error.
+ * Asserts the auto-fit camera keeps head+food on screen (the framing
+ * guarantee that replaced the old edge arrow), grabs a screenshot per
+ * device into .test-shots/ for eyeballing, fails on any error.
  * Run: `npm run test:resolutions`. */
 const fs = require('fs');
 const path = require('path');
@@ -65,9 +66,8 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
       check(d.name + ': boots', (await g(page, 'state')) === 'menu');
       await page.screenshot({ path: path.join(SHOTS, d.name + '-menu.png') });
       // worst case: snake starts one corner, food the other; wrap keeps the
-      // run alive unattended. Contract: the head is always framed; the food
-      // is either framed or flagged by the edge arrow (aligned + live distance).
-      // Radius is fixed now, so one settle wait suffices — no servo to chase.
+      // run alive unattended. Contract: the auto-fit camera always frames
+      // BOTH head and food — no edge arrow needed anymore.
       await page.evaluate(() => {
         document.getElementById('opt-wrap').checked = true;
         window.__game.start();
@@ -75,72 +75,38 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         window.__game.setDir(1, 0);
         window.__game.setFood(19, 19);
       });
-      await page.waitForTimeout(1500); // follow target eases onto the head
-      // best-of-3 samples: software-GL frames lag the live snake by up to a
-      // couple of cells, so a single read can catch the arrow mid-update
-      let bestCos = -2,
-        dist = null,
-        want = null,
-        head = null,
-        food = null,
-        arrowShown = false;
+      await page.waitForTimeout(1500); // target + radius settle onto the run
+      // 3 samples across live ticks: every one must keep both on screen
+      // (project() is exact per sample — no DOM staleness involved)
+      let headOk = true,
+        foodOk = true,
+        radiusOk = true,
+        worst = 0;
       for (let s = 0; s < 3; s++) {
         const sample = await page.evaluate(() => {
           const sc = window.__game.snake[0];
           const fc = window.__game.food;
           if (!sc || !fc) return null;
-          const hs = window.__game.screenFor(sc.x, sc.y);
-          if (!hs) return null; // renderer mid-reload; caller retries
-          let dx = fc.x - sc.x,
-            dy = fc.y - sc.y;
-          if (document.getElementById('opt-wrap').checked) {
-            dx -= 20 * Math.round(dx / 20);
-            dy -= 20 * Math.round(dy / 20);
-          }
-          const fs = window.__game.screenFor(sc.x + dx, sc.y + dy);
-          if (!fs) return null; // renderer mid-reload; caller retries
-          const r = document.getElementById('food-arrow').getBoundingClientRect();
-          const ax = r.left + r.width / 2;
-          const ay = r.top + r.height / 2;
-          const dot = (ax - hs.x) * (fs.x - hs.x) + (ay - hs.y) * (fs.y - hs.y);
-          const la = Math.hypot(ax - hs.x, ay - hs.y);
-          const lf = Math.hypot(fs.x - hs.x, fs.y - hs.y);
           return {
             head: window.__game.project(sc.x, sc.y),
             food: window.__game.project(fc.x, fc.y),
-            arrowShown: !document.getElementById('food-arrow').hidden,
-            cos: lf > 1 ? dot / (la * lf) : 1,
-            dist: document.getElementById('food-dist').textContent,
-            want: String(Math.abs(dx) + Math.abs(dy)),
+            radius: window.__game.radius,
           };
         });
         if (!sample) {
           await page.waitForTimeout(150);
           continue;
         }
-        if (sample.cos > bestCos) {
-          bestCos = sample.cos;
-          dist = sample.dist;
-          want = sample.want;
-          head = sample.head;
-          food = sample.food;
-          arrowShown = sample.arrowShown;
-        }
+        const m = Math.max(Math.abs(sample.food.x), Math.abs(sample.food.y));
+        if (m > worst) worst = m;
+        if (!inside(sample.head)) headOk = false;
+        if (!inside(sample.food)) foodOk = false;
+        if (!(sample.radius >= 10 && sample.radius <= 48)) radiusOk = false;
         await page.waitForTimeout(150);
       }
-      const frame = { head, food, arrowShown, cos: bestCos, dist, want };
-      const headOk = inside(frame.head);
-      const foodOk = inside(frame.food);
-      check(d.name + ': head framed', headOk, JSON.stringify(frame.head));
-      if (foodOk) {
-        check(d.name + ': food framed, arrow hidden', !frame.arrowShown);
-      } else {
-        check(
-          d.name + ': arrow flags off-screen food',
-          frame.arrowShown && frame.cos > 0.8 && frame.dist === frame.want,
-          JSON.stringify({ cos: frame.cos, dist: frame.dist, want: frame.want, food: frame.food })
-        );
-      }
+      check(d.name + ': head framed on all samples', headOk);
+      check(d.name + ': food framed on all samples (no arrow needed)', foodOk, 'worst=' + worst.toFixed(2));
+      check(d.name + ': radius sane', radiusOk);
       await page.waitForTimeout(600);
       const fps = await page.evaluate(() => window.__game.perf().fps);
       console.log('info  ' + d.name + ': fps=' + fps);

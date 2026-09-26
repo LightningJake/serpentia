@@ -126,6 +126,12 @@
     if (vars) for (var key in vars) s = s.split('{' + key + '}').join(vars[key]);
     return s;
   }
+  // Unshadowable alias: many functions use `var t` as a local (frame clock,
+  // touch, temp tex...), which hides the i18n helper for the whole function
+  // body. Anything inside those must call i18n() instead of t().
+  function i18n(k, vars) {
+    return t(k, vars);
+  }
   function biomeName(n) {
     return t('biome_' + n, null) || n;
   }
@@ -154,6 +160,11 @@
     for (var j = 0; j < htmls.length; j++) htmls[j].innerHTML = t(htmls[j].getAttribute('data-i18n-html'));
     var cv = $('scene');
     if (cv) cv.setAttribute('aria-label', t('canvas_label'));
+    // aria-labels: the D-pad, mode group and help grid were the only elements
+    // whose accessible name was hardcoded English
+    var arias = document.querySelectorAll('[data-i18n-aria]');
+    for (var a = 0; a < arias.length; a++)
+      arias[a].setAttribute('aria-label', t(arias[a].getAttribute('data-i18n-aria')));
     // dynamic button labels follow the current state
     if (typeof setState === 'function' && (state === 'playing' || state === 'paused')) {
       var bp = $('btn-pause');
@@ -220,8 +231,7 @@
     if (state !== 'over' && state !== 'win') return;
     life.prestige = (life.prestige || 0) + 1;
     saveLife();
-    toast(t('prestige_toast'));
-    announce(t('prestige_toast'));
+    say(t('prestige_toast'));
     lastStartAt = 0;
     startGame();
   }
@@ -231,8 +241,7 @@
     saveLife();
     syncSkinOptions(); // an achievement may have unlocked a skin
     var name = t('ach_' + id);
-    toast(t('ach_t', { n: name }));
-    announce(t('ach_t', { n: name }));
+    say(t('ach_t', { n: name }));
     beep(660, 1320, 0.2, 'sine');
     buzz(25);
   }
@@ -297,12 +306,16 @@
     }, 1800);
   }
   function updateHUD() {
-    elScore.textContent = score;
-    elBest.textContent = best;
-    elLevel.textContent = level;
-    elLen.textContent = snake.length;
+    // #hud is an aria-live region, and updateHUD runs on every tick (up to
+    // ~18/s). Only write when the value actually changed: an unconditional
+    // textContent assignment makes screen readers re-announce the whole HUD
+    // continuously, drowning out real announcements.
+    setText(elScore, score);
+    setText(elBest, best);
+    setText(elLevel, level);
+    setText(elLen, snake.length);
     var gl = $('goal');
-    if (gl) gl.textContent = (foodsEaten % FOODS_PER_LEVEL) + '/' + FOODS_PER_LEVEL;
+    if (gl) setText(gl, (foodsEaten % FOODS_PER_LEVEL) + '/' + FOODS_PER_LEVEL);
     // minimal in-game HUD: extra pills hide while playing
     var mini = state === 'playing';
     var hideIds = ['pill-level', 'pill-length', 'pill-goal'];
@@ -313,14 +326,18 @@
     var pc = $('pill-combo');
     if (pc) {
       pc.hidden = combo < 2 || mini;
-      if (combo >= 2) $('combo').textContent = 'x' + Math.min(combo, 5);
+      if (combo >= 2) setText($('combo'), 'x' + Math.min(combo, 5));
     }
     // shield charge stays visible mid-run: it is a life, not a stat
     var ps = $('pill-shield');
     if (ps) {
       ps.hidden = !hasShield;
-      ps.title = t('shield_hud');
+      setAttr(ps, 'title', t('shield_hud'));
     }
+  }
+  // attribute writer: same no-op skip as setText (updateHUD runs every tick)
+  function setAttr(el, k, v) {
+    if (el && el.getAttribute(k) !== v) el.setAttribute(k, v);
   }
   // Combo: eats chained within COMBO_WINDOW raise the multiplier (capped at x5)
   function registerEat() {
@@ -329,10 +346,24 @@
     lastEatAt = performance.now();
     return r.mult;
   }
-  // Screen-reader announcements (separate from visual toasts)
+  // Screen-reader announcements. #toast is aria-hidden (visual only), so this
+  // is the single source of spoken feedback: every user-visible event that
+  // toasts must also announce here, exactly once.
   function announce(msg) {
     var el = $('sr-status');
     if (el) el.textContent = msg;
+  }
+  // toast + announce in one call, so the two can never drift apart again.
+  // A repeat of the previous message is skipped: polite live regions ignore
+  // identical text, so re-announcing is unreliable across readers. Pass
+  // force=true for a message that legitimately repeats.
+  var lastSaid = '';
+  function say(msg, force) {
+    toast(msg);
+    if (force || msg !== lastSaid) {
+      lastSaid = msg;
+      announce(msg);
+    }
   }
   // Palettes: standard vs colorblind-safe (Okabe-Ito inspired)
   var PALETTES = {
@@ -538,6 +569,12 @@
       longest
     );
   }
+  // DOM text writer: skips no-op writes so aria-live regions are not spammed
+  function setText(el, v) {
+    if (!el) return;
+    var s = String(v);
+    if (el.textContent !== s) el.textContent = s;
+  }
   function setState(s) {
     state = s;
     overlay.classList.toggle('hidden', s === 'playing' || s === 'paused');
@@ -649,14 +686,14 @@
       return;
     }
     function done() {
-      toast(t('copied'));
+      say(t('copied'));
     }
     try {
       if (navigator.clipboard && navigator.clipboard.writeText)
         navigator.clipboard.writeText(txt).then(done, done);
-      else toast(txt);
+      else say(txt);
     } catch (e) {
-      toast(txt);
+      say(txt);
     }
   }
   // Shareable moments: 1200x630 picture card (game frame + score bar) for
@@ -776,7 +813,7 @@
   }
   function deliverShot(u) {
     if (!u) {
-      toast(t('shot_fail'));
+      say(t('shot_fail'));
       return;
     }
     var f = null;
@@ -807,9 +844,9 @@
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      toast(t('shot_saved'));
+      say(t('shot_saved'));
     } catch (e) {
-      toast(t('shot_fail'));
+      say(t('shot_fail'));
     }
   }
   // Stat chips for overlay cards (screen readers get statsLine() instead)
@@ -1349,6 +1386,8 @@
     emberToastShown = false;
     runLayout = null;
     warnPulses = [];
+    holdUntil = 0;
+    radiusHold = 0; // fresh run, fresh framing (no stale inspection zoom)
     seedGen = null; // fresh deterministic stream for seeded runs
     combo = 0;
     lastEatAt = 0;
@@ -1399,14 +1438,17 @@
     }
     return null;
   }
-  function seedObstacles(n) {
-    obstacles = [];
+  function pickLayout() {
     // one variant per run: pattern, transposed pattern, or classic scatter.
     // Chosen from the seeded stream, so links replay identical maps.
     var r = rng();
     var L = LAYOUTS[themeIdx] || LAYOUTS[0];
     if (r < 0.15) runLayout = { scatter: true };
     else runLayout = { base: L.base, transpose: r < 0.4 };
+  }
+  function seedObstacles(n) {
+    obstacles = [];
+    pickLayout();
     addObstacles(n);
   }
   function transposeBase(base) {
@@ -1439,14 +1481,22 @@
           { x: GRID - 1 - cands[i].x, y: GRID - 1 - cands[i].y },
         ];
         var members = [];
+        var blocked = false;
         for (var q = 0; q < orb.length; q++) {
           var mk = orb[q].x + orb[q].y * GRID;
           if (seenOb[mk]) continue;
           seenOb[mk] = true;
           if (occ[mk]) continue;
-          if (snake.length && Math.abs(orb[q].x - snake[0].x) + Math.abs(orb[q].y - snake[0].y) < 4) continue; // fairness beats symmetry near the head
+          // fairness beats symmetry: if ANY member of the orbit sits too
+          // close to the head, drop the WHOLE orbit. Keeping the others was a
+          // real bug - it left the map asymmetric (caught by the e2e suite).
+          if (snake.length && Math.abs(orb[q].x - snake[0].x) + Math.abs(orb[q].y - snake[0].y) < 4) {
+            blocked = true;
+            continue;
+          }
           members.push(orb[q]);
         }
+        if (blocked) members = [];
         if (!members.length) continue;
         if (obstacles.length + members.length > want && obstacles.length !== before) break;
         for (var m2 = 0; m2 < members.length; m2++) {
@@ -1485,6 +1535,8 @@
       }
     }
     if (warnPulses.length > 64) warnPulses.splice(0, warnPulses.length - 64);
+    // fresh deadly blocks are a visual-only pulse; announce once per batch
+    if (cells.length) say(t('telegraph_a11y'));
   }
   function activeWarns(now) {
     var out = [];
@@ -1502,8 +1554,8 @@
     showBanner(t('banner_level', { n: n, biome: biomeName(L.name) + ' ' + L.icon }));
     toast(t('level_t', { n: n, biome: biomeName(L.name) }));
     if (L.name === 'Ice') {
-      toast(t('ice_banner')); // banner above keeps the level info; this teaches the slide
-      announce(t('ice_banner'));
+      // banner above keeps the level info; this teaches the slide
+      say(t('ice_banner'));
     }
     beep(523, 1046, 0.18, 'sine');
     announce(t('sr_level', { n: n, biome: biomeName(L.name) }));
@@ -1543,8 +1595,7 @@
       try {
         store.set('snake3d.seenKeys', '1');
       } catch (e) {}
-      toast(t('keys_hint'));
-      announce(t('keys_hint'));
+      say(t('keys_hint'));
     }
   }
   // RESPONSIVE: rotate head instantly on input so turns feel immediate,
@@ -1625,7 +1676,7 @@
       burst({ x: tb.x, y: 0.7, z: tb.z }, 0xff5fa2, 16);
       beep(880, 1560, 0.16, 'square');
       hideBonusMesh();
-      toast(t('bonus_ate', { n: gainedB }) + (multB > 1 ? ' (x' + multB + ')' : ''));
+      say(t('bonus_ate', { n: gainedB }) + (multB > 1 ? ' (x' + multB + ')' : ''));
       if (multB >= 5) showBanner(t('banner_combo'));
       tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
       if (snake.length >= GRID * GRID) {
@@ -1647,7 +1698,7 @@
       squash = 1;
       fx2d(nx, ny, '+' + gained, curPal().css.food);
       hideTut();
-      if (mult > 1) toast(t('combo_t', { m: mult, n: gained }));
+      if (mult > 1) say(t('combo_t', { m: mult, n: gained }));
       if (mult >= 5) showBanner(t('banner_combo'));
       var nl = SnakeLogic.levelFor(foodsEaten, FOODS_PER_LEVEL);
       if (nl > level) levelUp(nl);
@@ -1672,15 +1723,13 @@
       burst({ x: gw.x, y: 0.7, z: gw.z }, 0x46e6ff, 14);
       sfx.eat();
       buzz(20);
-      toast(t('shield_ate'));
-      announce(t('shield_ate'));
+      say(t('shield_ate'));
       hideTut();
     } else snake.pop();
     // desert rule: uneaten food withers and respawns elsewhere (eating wins ties)
     if (!willEat && biomeIs('Desert') && performance.now() - foodBornAt > DESERT_FOOD_TTL) {
       spawnFood();
-      toast(t('desert_drain'));
-      announce(t('desert_drain'));
+      say(t('desert_drain'));
     }
     syncSnakeMeshes();
     updateHUD();
@@ -1738,7 +1787,10 @@
     setTimeout(function () {
       if (state === 'over') replayOver();
     }, 1000);
-    announce(t('sr_over', { s: stats }));
+    // cause first, then the stat line: the recap card reuses the same order.
+    // One announcement only - toast() is visual (aria-hidden), say() would
+    // duplicate the cause.
+    announce(msg + '. ' + t('sr_over', { s: stats }));
     toast(msg);
   }
   function win() {
@@ -1926,15 +1978,39 @@
   }); // explicit Restart always resets
   onTap($('btn-pause'), function () {
     if (state === 'playing' || state === 'paused') togglePause();
-    else toast(t('press_start'));
+    else say(t('press_start'));
   });
-  onTap($('btn-help'), function () {
+  // Help dialog: open moves focus inside, close hands it back to the opener.
+  // Without the restore, focus was left on the now-hidden close button and the
+  // next Tab restarted from <body> (keyboard users lost their place).
+  function openHelp() {
     if (state === 'playing') togglePause(); // never run the game behind the docs
     $('help-modal').hidden = false;
-  });
-  onTap($('btn-close-help'), function () {
+    var c = $('btn-close-help');
+    if (c) {
+      try {
+        c.focus({ preventScroll: true });
+      } catch (e) {}
+    }
+  }
+  function closeHelp() {
     $('help-modal').hidden = true;
-  });
+    // Hand focus to the card's primary action, which is where the player is
+    // actually headed (help auto-pauses, so Resume is the next thing wanted).
+    // Falling back to the help button is wrong: Space on it would re-open the
+    // dialog instead of resuming, because buttons activate on Space natively.
+    var back = null;
+    if (state === 'paused') back = $('btn-resume');
+    else if (state === 'playing' || state === 'menu') back = $('btn-play');
+    if (!back || back.hidden || back.disabled) back = $('btn-help');
+    if (back && back.focus) {
+      try {
+        back.focus({ preventScroll: true });
+      } catch (e) {}
+    }
+  }
+  onTap($('btn-help'), openHelp);
+  onTap($('btn-close-help'), closeHelp);
   onTap($('btn-resume'), function () {
     if (state === 'paused') togglePause();
   });
@@ -1955,7 +2031,7 @@
           lastShotURL = u;
           shotReadyFlag = true;
           deliverShot(u);
-        } else toast(t('shot_fail'));
+        } else say(t('shot_fail'));
       });
   });
   // Service-worker update: the waiting worker activates, then we reload
@@ -1985,7 +2061,7 @@
     deferredInstall = null;
     var r = $('install-row');
     if (r) r.hidden = true;
-    toast(t('install_ok'));
+    say(t('install_ok'));
     announce(t('install_ok'));
   });
   onTap($('btn-install'), function () {
@@ -1995,7 +2071,7 @@
         if (deferredInstall.userChoice && deferredInstall.userChoice.catch)
           deferredInstall.userChoice.catch(function () {});
       } catch (e) {}
-    } else toast(t('install_manual'));
+    } else say(t('install_manual'));
   });
   var segBtns = document.querySelectorAll('#mode-seg button');
   for (var gi = 0; gi < segBtns.length; gi++) {
@@ -2017,7 +2093,7 @@
         skinId = sk.id;
         saveSettings();
         applySkin();
-        toast(t('skin_' + skinId));
+        say(t('skin_' + skinId));
       } else syncSkinOptions(); // locked choice: snap back to the owned skin
     });
   if ($('opt-music'))
@@ -2036,7 +2112,7 @@
         saveSettings();
         syncModeSeg();
         tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
-        toast(t('kid_on'));
+        say(t('kid_on'));
         announce(t('kid_on'));
       }
     });
@@ -2128,12 +2204,15 @@
     }
     // Escape closes help even when a button holds focus (trap keeps it there)
     if (e.code === 'Escape' && !$('help-modal').hidden) {
-      $('help-modal').hidden = true;
+      closeHelp();
       return;
     }
     // Focused buttons activate natively (single click via onTap fallback).
-    // Swallowing them here would double-fire (native + global).
-    if (tag === 'BUTTON') return;
+    // Swallowing them here would double-fire (native + global) — but only
+    // Space/Enter activate buttons, so only those return early. Turn keys
+    // must keep steering even right after clicking a button (otherwise the
+    // controls silently die until the next canvas click).
+    if (tag === 'BUTTON' && (e.code === 'Space' || e.code === 'Enter')) return;
     if (TURNMAP[e.code]) {
       e.preventDefault();
       audio();
@@ -2149,7 +2228,7 @@
     if (e.code === 'Space' || e.code === 'KeyP') {
       e.preventDefault();
       if (!$('help-modal').hidden) {
-        $('help-modal').hidden = true; // dismiss docs first, game stays paused
+        closeHelp(); // dismiss docs first, game stays paused
         return;
       }
       if (state === 'playing' || state === 'paused') togglePause();
@@ -2158,7 +2237,7 @@
     }
     if (e.code === 'Enter') {
       if (!$('help-modal').hidden) {
-        $('help-modal').hidden = true;
+        closeHelp();
         return;
       }
       if (state === 'paused')
@@ -2202,7 +2281,7 @@
         theta -= (mx - pinchMX) * 0.008;
         phi -= (my - pinchMY) * 0.007;
         phi = Math.max(0.35, Math.min(1.25, phi));
-        radius = Math.max(10, Math.min(45, radius - (d - pinchD) * 0.05));
+        setRadiusHold(radius - (d - pinchD) * 0.05);
       }
       pinchMX = mx;
       pinchMY = my;
@@ -2256,6 +2335,20 @@
   var theta = Math.PI / 4,
     phi = 0.95,
     radius = 24;
+  // Auto-fit framing: FIT_BASE at the head, growing with head-food distance
+  // so both stay on screen (replaces the old edge arrow entirely).
+  var FIT_BASE = 24,
+    FIT_K = 1.2,
+    FIT_MAX = 48;
+  // Look-target food weight ramps with distance: near food keeps the snake
+  // centered (0.28), far food pulls the target toward it (0.42) so both ends
+  // fit inside a readable radius on narrow portrait screens too.
+  var radiusHold = 0, // wheel/pinch inspection override (absolute radius)
+    holdUntil = 0; // auto-fit resumes after this timestamp
+  function setRadiusHold(r) {
+    radiusHold = Math.max(10, Math.min(48, r));
+    holdUntil = performance.now() + 4000;
+  }
   var camTarget = null,
     desiredTarget = null;
   var ctx2d = null;
@@ -2274,6 +2367,10 @@
         powerPreference: 'high-performance',
       });
     } catch (e) {
+      // Remember WHY: "WebGL blocked" and "renderer construction threw" are
+      // indistinguishable from the outside otherwise (and we ship no console
+      // logging by design), so the real cause is stashed for the test suite.
+      window.__initErr = String((e && e.message) || e);
       return false;
     }
     // RESPONSIVE perf: cap DPR + smaller shadows = big fps win on laptops
@@ -2584,17 +2681,17 @@
       'wheel',
       function (e) {
         e.preventDefault();
-        radius = Math.max(10, Math.min(45, radius + e.deltaY * 0.02));
+        setRadiusHold(radius + e.deltaY * 0.02); // temporary inspection zoom
       },
       { passive: false }
     );
     canvas.addEventListener('webglcontextlost', function (e) {
       e.preventDefault();
-      toast(t('gpu_lost'));
+      say(t('gpu_lost'));
       if (state === 'playing') togglePause();
     });
     canvas.addEventListener('webglcontextrestored', function () {
-      toast(t('gpu_back'));
+      say(t('gpu_back'));
     });
 
     var sh = $('opt-shadows');
@@ -3011,7 +3108,7 @@
     bonus = c;
     bonusLeft = BONUS_TTL;
     placeBonusMesh();
-    toast(t('bonus_spawn'));
+    say(t('bonus_spawn'));
     return true;
   }
   function placeBonusMesh() {
@@ -3044,7 +3141,7 @@
     shieldLeft = SHIELD_TTL;
     shieldBornAt = performance.now();
     placeShieldMesh();
-    toast(t('shield_spawn'));
+    say(t('shield_spawn'));
     return true;
   }
   function placeShieldMesh() {
@@ -3068,8 +3165,7 @@
     embers.push({ x: c.x, y: c.y, age: 0 });
     if (!emberToastShown) {
       emberToastShown = true;
-      toast(t('ember_first'));
-      announce(t('ember_first'));
+      say(t('ember_first'));
     }
     return true;
   }
@@ -3084,8 +3180,7 @@
     var hw = gridToWorld(snake[0].x, snake[0].y);
     burst({ x: hw.x, y: 0.7, z: hw.z }, 0x46e6ff, 20);
     showBanner(t('shield_saved'));
-    toast(t('shield_saved'));
-    announce(t('shield_saved'));
+    say(t('shield_saved'));
     beep(440, 880, 0.2, 'square');
     buzz([40, 40, 40]);
     return true;
@@ -3107,89 +3202,6 @@
       if (++n >= want) break;
     }
   }
-  // Off-screen food arrow: the camera stays close and readable; when the food
-  // leaves the frame, an edge marker points at it with the cell distance.
-  // Wrap-aware: across an edge, it points the short way around.
-  function ndcCell(gx, gy) {
-    if (mode !== '3d' || !window.THREE || !camera) return null;
-    var w = gridToWorld(gx, gy);
-    var v = new window.THREE.Vector3(w.x, 0.5, w.z).project(camera);
-    return { x: v.x, y: v.y, behind: v.z > 1 };
-  }
-  function updateFoodArrow() {
-    var el = $('food-arrow');
-    if (!el) return;
-    if (mode !== '3d' || state !== 'playing' || !snake.length) {
-      el.hidden = true;
-      return;
-    }
-    var hs = ndcCell(snake[0].x, snake[0].y);
-    var fs = ndcCell(food.x, food.y);
-    var onScreen = function (p) {
-      return p && !p.behind && Math.abs(p.x) <= 0.92 && Math.abs(p.y) <= 0.88;
-    };
-    if (onScreen(fs)) {
-      el.hidden = true;
-      return;
-    }
-    var hw = gridToWorld(snake[0].x, snake[0].y);
-    var fw = gridToWorld(food.x, food.y);
-    var dx = fw.x - hw.x,
-      dz = fw.z - hw.z;
-    if ($('opt-wrap').checked) {
-      dx -= GRID * Math.round(dx / GRID);
-      dz -= GRID * Math.round(dz / GRID);
-    }
-    var len = Math.sqrt(dx * dx + dz * dz) || 1;
-    var b = camBasis();
-    var sx = (dx / len) * b.rx + (dz / len) * b.rz; // screen right+
-    var sy = (dx / len) * b.fx + (dz / len) * b.fz; // screen up+
-    var ang = Math.atan2(sx, sy);
-    var ax = hs && !hs.behind ? ((hs.x + 1) / 2) * window.innerWidth : window.innerWidth / 2;
-    var ay = hs && !hs.behind ? ((1 - hs.y) / 2) * window.innerHeight : window.innerHeight / 2;
-    // Safe box for the marker: clear of the HUD (top), the D-pad (bottom)
-    // and the screen edges. The anchor is clamped into it first, so the ray
-    // below always starts inside and a box-exit hit is guaranteed to exist.
-    var x0 = 46,
-      x1 = window.innerWidth - 46,
-      y0 = 120,
-      y1 = window.innerHeight - 190;
-    ax = Math.max(x0, Math.min(x1, ax));
-    ay = Math.max(y0, Math.min(y1, ay));
-    // Analytic ray -> box-exit placement: the arrow sits exactly on the
-    // bearing ray from the anchor, as far out as fits. The old
-    // shrink-then-hard-clamp loop could never converge when the head sat
-    // near the box edge (R2 collapsed, then the clamp yanked the arrow
-    // sideways and destroyed the bearing); this cannot skew by construction.
-    // MIN_LEVER keeps a lever arm so one stale frame under software GL can
-    // never dominate the measured angle.
-    var vx = Math.sin(ang),
-      vy = -Math.cos(ang);
-    var tExit = Infinity;
-    if (Math.abs(vx) > 1e-9) tExit = Math.min(tExit, vx > 0 ? (x1 - ax) / vx : (x0 - ax) / vx);
-    if (Math.abs(vy) > 1e-9) tExit = Math.min(tExit, vy > 0 ? (y1 - ay) / vy : (y0 - ay) / vy);
-    if (!isFinite(tExit) || tExit < 0) tExit = 0;
-    var R = 110,
-      MIN_LEVER = 26,
-      PAD = 10;
-    var t = Math.min(R, Math.max(tExit - PAD, MIN_LEVER));
-    var px = ax + vx * t,
-      py = ay + vy * t;
-    var mdx = Math.abs(food.x - snake[0].x);
-    var mdz = Math.abs(food.y - snake[0].y);
-    if ($('opt-wrap').checked) {
-      mdx = Math.min(mdx, GRID - mdx);
-      mdz = Math.min(mdz, GRID - mdz);
-    }
-    el.hidden = false;
-    el.style.left = px + 'px';
-    el.style.top = py + 'px';
-    var glyph = el.firstElementChild;
-    if (glyph) glyph.style.transform = 'rotate(' + (ang * 180) / Math.PI + 'deg)';
-    var dist = $('food-dist');
-    if (dist) dist.textContent = mdx + mdz;
-  }
-
   // ---------- 2D fallback + effects ----------
   var parts2d = [],
     pops2d = [];
@@ -3226,7 +3238,7 @@
         n.hidden = true;
       }, 5000);
     }
-    toast(reason || t('note_2d_mode'));
+    say(reason || t('note_2d_mode'));
   }
   function fitCanvas() {
     var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -3433,7 +3445,7 @@
         });
     }
     applyQualityVisuals();
-    toast(t('perf_t', { q: quality }));
+    say(t('perf_t', { q: quality }));
   }
   function animate(now) {
     requestAnimationFrame(animate);
@@ -3480,9 +3492,19 @@
       }
     } else if (state !== 'playing') emberAcc = 0;
     if (state === 'playing') {
+      // resolved outside the loop: `t` is shadowed by the frame clock in
+      // animate(), so the i18n helper must be called as i18n() in here
+      var igniteMsg = i18n('ember_ignite');
       for (var emi = embers.length - 1; emi >= 0; emi--) {
-        embers[emi].age += dt * 1000;
-        if (embers[emi].age >= EMBER_WARN + EMBER_BURN) embers.splice(emi, 1);
+        var em = embers[emi];
+        var wasBurning = em.age >= EMBER_WARN;
+        em.age += dt * 1000;
+        if (!wasBurning && em.age >= EMBER_WARN) {
+          // the telegraph->lethal transition is invisible to a screen reader
+          // otherwise: a cell the player cannot see becomes deadly silently
+          say(igniteMsg, true);
+        }
+        if (em.age >= EMBER_WARN + EMBER_BURN) embers.splice(emi, 1);
       }
     }
 
@@ -3665,18 +3687,42 @@
     }
     var camSel = $('opt-cam');
     var topView = !!(camSel && camSel.value === 'top');
-    var head = snake.length ? gridToWorld(snake[0].x, snake[0].y) : { x: 0, z: 0 };
-    var fw = gridToWorld(food.x, food.y);
-    // fixed comfortable framing: the camera NEVER auto-zooms (that bounce on
-    // every eat was the #1 feel complaint). It follows the head with a slight
-    // lookahead toward the food; far food is signalled by the edge arrow, and
-    // the user owns the radius via wheel / pinch.
-    if (topView) desiredTarget.set(0, 0, 0);
-    else if ($('opt-follow').checked)
-      desiredTarget.set(head.x * 0.85 + fw.x * 0.15, 0, head.z * 0.85 + fw.z * 0.15);
-    else desiredTarget.set(0, 0, 0);
-    camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
-    updateFoodArrow(); // edge marker when the food is off-screen (3D playing only)
+    // Auto-fit framing: the camera always keeps BOTH head and food on screen.
+    // The look target is head-biased (the snake stays prominent); the radius
+    // grows with the wrap-aware head-food distance. Zoom-out is instant so an
+    // eat never loses the new food; zoom-in eases down gently. Wheel/pinch
+    // inspection temporarily overrides, then auto-fit resumes on its own.
+    var wantR = radius;
+    if (snake.length && (state === 'playing' || state === 'paused')) {
+      var hw2 = gridToWorld(snake[0].x, snake[0].y);
+      var fw2 = gridToWorld(food.x, food.y);
+      // raw span (no wrap shortcut): the food is RENDERED at its cell, so the
+      // frame must cover the true on-board distance — even when the snake
+      // could take a shorter way through the wall
+      var fdx = fw2.x - hw2.x,
+        fdz = fw2.z - hw2.z;
+      var fdist = Math.sqrt(fdx * fdx + fdz * fdz);
+      var foodW = 0.28 + 0.16 * Math.min(1, fdist / 20);
+      // head-biased look target in every view (top-down tracks the same way;
+      // a center-fixed overhead view loses the snake at the edges)
+      if (!topView && !$('opt-follow').checked) desiredTarget.set(0, 0, 0);
+      else desiredTarget.set(hw2.x + fdx * foodW, 0, hw2.z + fdz * foodW);
+      camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
+      wantR = FIT_BASE + fdist * FIT_K;
+      if (wantR > FIT_MAX) wantR = FIT_MAX;
+    } else {
+      if (topView) desiredTarget.set(0, 0, 0);
+      else if ($('opt-follow').checked) {
+        var hh = snake.length ? gridToWorld(snake[0].x, snake[0].y) : { x: 0, z: 0 };
+        desiredTarget.set(hh.x, 0, hh.z);
+      } else desiredTarget.set(0, 0, 0);
+      camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
+      wantR = FIT_BASE;
+    }
+    if (now < holdUntil && radiusHold > 0)
+      radius = radiusHold; // inspection: instant, like the old wheel
+    else if (wantR > radius) radius = wantR;
+    else radius += (wantR - radius) * Math.min(1, cdt * 2.5);
     var sx = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     var sy = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     if (shake > 0) shake = Math.max(0, shake - dt * 1.4);
@@ -3900,6 +3946,18 @@
     get layout() {
       return runLayout ? { scatter: !!runLayout.scatter, transpose: !!runLayout.transpose } : null;
     },
+    // Test hook: force a layout variant instead of rolling the seeded dice.
+    // The symmetry assert needs a patterned variant deterministically; with
+    // random rolls it was a ~1-in-7000 flake across the retry loop.
+    forceLayout: function (kind) {
+      if (kind === 'scatter') runLayout = { scatter: true };
+      else {
+        var L = LAYOUTS[themeIdx] || LAYOUTS[0];
+        runLayout = { base: L.base, transpose: kind === 'transpose' };
+      }
+      addObstacles(OBSTACLE_PER_LEVEL);
+      return runLayout;
+    },
     // test hooks: themed food tint + wall build heights
     get foodTint() {
       try {
@@ -3945,6 +4003,15 @@
     setCam: function (t, p) {
       theta = t;
       phi = Math.max(0.16, Math.min(1.25, p));
+    },
+    // Inspection zoom for tests: absolute radius held for ms (default 4000),
+    // exactly like a wheel/pinch gesture. Auto-fit resumes after the hold.
+    setRadius: function (r, ms) {
+      radiusHold = Math.max(10, Math.min(48, r));
+      holdUntil = performance.now() + (ms == null ? 4000 : ms);
+    },
+    get radius() {
+      return Math.round(radius * 10) / 10;
     },
     // Read-only camera basis for the swipe suite: it must wait until the
     // orbit actually settles before asserting screen-absolute steering.
@@ -4001,6 +4068,10 @@
   try {
     ok3d = initThree();
   } catch (e) {
+    // initThree is ~345 lines of scene setup; a silent catch here turns any
+    // bug in it into "the game just looks different" with no way to tell a
+    // blocked WebGL context from a real defect. Stash the message instead.
+    window.__initErr = String((e && e.message) || e);
     ok3d = false;
   }
   if (!ok3d) init2D(!window.THREE ? t('note_2d_cdn') : t('note_2d_gl'));

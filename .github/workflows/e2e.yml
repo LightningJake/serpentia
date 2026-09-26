@@ -2,9 +2,19 @@ name: tests
 
 on: [push, pull_request]
 
+# one run per ref: a PR push would otherwise trigger every job twice
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+# read-only by default; no job needs write scope
+permissions:
+  contents: read
+
 jobs:
   unit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -14,10 +24,12 @@ jobs:
       - run: npm ci
       - run: npm run test:unit
       - run: npm run test:scan
+      - run: npm run test:contrast
       - run: npm run format:check
 
   e2e-desktop:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -34,6 +46,7 @@ jobs:
 
   e2e-mobile:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,6 +60,7 @@ jobs:
 
   e2e-edge:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -60,6 +74,8 @@ jobs:
 
   e2e-resolutions:
     runs-on: ubuntu-latest
+    # 9 viewports + 8 full page reloads: the slowest job by far
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
