@@ -17,7 +17,7 @@
  * No build step: the cache name is a manual version. Bump it whenever shipped
  * assets change, which is what triggers the "new version" refresh prompt.
  */
-const CACHE = 'snake-v5';
+const CACHE = 'snake-v6';
 const LOCAL = [
   './',
   './index.html',

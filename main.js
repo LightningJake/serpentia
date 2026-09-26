@@ -1498,15 +1498,22 @@
           { x: GRID - 1 - cands[i].x, y: GRID - 1 - cands[i].y },
         ];
         var members = [];
+        // An orbit is all-or-nothing. If ANY of its 4 cells is unusable the
+        // whole orbit is dropped: keeping the rest leaves a lopsided map, which
+        // is both unfair (one side armoured) and breaks the symmetry the
+        // layouts are built around. Both reasons below were real bugs, each
+        // caught by the e2e suite:
+        //   - a member too close to the head (fairness)
+        //   - a member already occupied by the snake or food (playability)
         var blocked = false;
         for (var q = 0; q < orb.length; q++) {
           var mk = orb[q].x + orb[q].y * GRID;
           if (seenOb[mk]) continue;
           seenOb[mk] = true;
-          if (occ[mk]) continue;
-          // fairness beats symmetry: if ANY member of the orbit sits too
-          // close to the head, drop the WHOLE orbit. Keeping the others was a
-          // real bug - it left the map asymmetric (caught by the e2e suite).
+          if (occ[mk]) {
+            blocked = true;
+            continue;
+          }
           if (snake.length && Math.abs(orb[q].x - snake[0].x) + Math.abs(orb[q].y - snake[0].y) < 4) {
             blocked = true;
             continue;
@@ -3972,7 +3979,11 @@
         var L = LAYOUTS[themeIdx] || LAYOUTS[0];
         runLayout = { base: L.base, transpose: kind === 'transpose' };
       }
-      addObstacles(OBSTACLE_PER_LEVEL);
+      // rebuild from EMPTY, never append: the run's own seed may have chosen
+      // the scatter variant, whose obstacles are intentionally asymmetric, so
+      // appending would make the forced variant's symmetry untestable
+      obstacles = [];
+      addObstacles(OBSTACLE_START);
       return runLayout;
     },
     // test hooks: themed food tint + wall build heights

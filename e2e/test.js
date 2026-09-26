@@ -251,14 +251,44 @@ async function newPage(browser, blockCDN) {
     );
     await page.evaluate(() => window.__game.pause()); // resume for the tests below
 
-    // Dead keys teach once: ↑ shows the hint and records it
+    // Dead keys teach once: the FIRST dead key shows the hint and records it,
+    // and later dead keys stay silent.
+    //
+    // The hint is asserted by RECORDING every #toast write, not by sampling
+    // the element afterwards. The game is playing here, so #toast is a shared
+    // channel: a competing announcement (perf mode under swiftshader, level
+    // up, a hazard) can overwrite the text within the wait, which made this
+    // check fail intermittently while the hint had fired correctly.
+    await page.evaluate(() => {
+      const el = document.getElementById('toast');
+      window.__toastSeen = [];
+      window.__toastMo = new MutationObserver(() => {
+        const v = el.textContent;
+        if (v && window.__toastSeen[window.__toastSeen.length - 1] !== v) window.__toastSeen.push(v);
+      });
+      window.__toastMo.observe(el, { childList: true, characterData: true, subtree: true });
+    });
     await page.keyboard.press('ArrowUp');
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(250);
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(250);
+    const deadKey = await page.evaluate(() => {
+      window.__toastMo.disconnect();
+      const want = window.I18N.en.keys_hint;
+      const seen = window.__toastSeen;
+      return {
+        want,
+        taught: seen.includes(want),
+        // the "once" in the test name: a second dead key must not re-teach
+        count: seen.filter((v) => v === want).length,
+        stored: localStorage.getItem('snake3d.seenKeys'),
+        seen: seen.slice(-4),
+      };
+    });
     check(
       'keyboard: dead key teaches once',
-      (await page.locator('#toast.show').count()) >= 1 &&
-        /← →/.test((await page.locator('#toast').textContent()) || '') &&
-        (await page.evaluate(() => localStorage.getItem('snake3d.seenKeys'))) === '1'
+      deadKey.taught && deadKey.count === 1 && deadKey.stored === '1',
+      JSON.stringify(deadKey)
     );
 
     // Space pause/resume, Enter restart
