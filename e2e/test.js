@@ -405,17 +405,36 @@ async function newPage(browser, blockCDN) {
       JSON.stringify({ state: await g(page, 'state'), games: (await g(page, 'life')).games })
     );
 
-    // Eat food grows snake
+    // Eat food grows snake.
+    // Assert the INTENT (one food = +10 and exactly one segment of growth)
+    // instead of polling for `length === 4`, which is a single transient frame
+    // a poll can easily miss once the snake keeps moving. Same luck-dependence
+    // that made the 2D scoring check flaky: food placed once, then hoped for.
+    const lenBefore = (await g(page, 'snake')).length;
     await page.evaluate(() => {
       window.__game.start();
-      const s = window.__game.snake,
-        d2 = window.__game.dir;
-      window.__game.setFood(s[0].x + d2.x, s[0].y + d2.y);
+      window.__eatDrive = setInterval(() => {
+        const gme = window.__game;
+        if (gme.state !== 'playing') return;
+        const s = gme.snake[0];
+        if (!s) return;
+        const d = gme.dir;
+        gme.setFood((s.x + d.x + 20) % 20, (s.y + d.y + 20) % 20);
+      }, 30);
     });
-    await page.waitForFunction(() => window.__game.score >= 10 && window.__game.snake.length === 4, null, {
-      timeout: 5000,
+    const ate = await page
+      .waitForFunction(() => window.__game.score >= 10, null, { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+    const eatRes = await page.evaluate(() => {
+      clearInterval(window.__eatDrive);
+      return { score: window.__game.score, len: window.__game.snake.length };
     });
-    check('eat: score+10 & length 4', true);
+    check(
+      'eat: score+10 & length 4',
+      ate && eatRes.score >= 10 && eatRes.len === lenBefore + 1,
+      JSON.stringify({ before: lenBefore, ...eatRes })
+    );
 
     // Wall death -> Game Over overlay
     await page.evaluate(() => {
@@ -1844,24 +1863,60 @@ async function newPage(browser, blockCDN) {
     const nOb = await page2.evaluate(() => window.__game.obstacles.length);
     check('2D: obstacles spawn', nOb > 0, 'n=' + nOb);
     check('2D: no food arrow element', (await page2.locator('#food-arrow').count()) === 0);
-    // 2D tap-to-steer via the same click path
+    // 2D tap-to-steer via the same click path.
+    // Stay PAUSED and assert the QUEUED direction, like the 3D case above.
+    // The old version called pause() twice - and the hook is a TOGGLE, so the
+    // second call resumed play. The snake then travelled before the click
+    // landed, and since steerToward picks the dominant axis a 5-cell drift
+    // turned the tap into a (reversed, therefore ignored) downward turn:
+    // an intermittent failure with nothing to do with steering.
     await page2.evaluate(() => {
       window.__game.start();
       window.__game.pause();
       window.__game.setSnake([{ x: 10, y: 10 }]);
       window.__game.setDir(0, -1);
-      window.__game.pause(); // resume
     });
-    await page2.waitForTimeout(120);
-    const v2 = await page2.evaluate(() => window.__game.view);
-    const rect2 = await page2.locator('#scene').boundingBox();
-    await page2.mouse.click(
-      rect2.x + (v2.ox + 14.5 * v2.cell) / v2.dpr,
-      rect2.y + (v2.oy + 10.5 * v2.cell) / v2.dpr
+    await page2.waitForTimeout(200);
+    // Compute the tap point and dispatch in ONE in-page evaluate, deriving the
+    // client coords from the canvas's own getBoundingClientRect(). Reading the
+    // box from Playwright and dispatching separately risks a skew that lands
+    // the tap off the board, which silently queues nothing at all.
+    const q2 = await page2.evaluate(() => {
+      const g = window.__game;
+      const v = g.view;
+      const c = document.getElementById('scene');
+      const r = c.getBoundingClientRect();
+      const init = {
+        pointerType: 'mouse',
+        button: 0,
+        clientX: r.left + (v.ox + 14.5 * v.cell) / v.dpr,
+        clientY: r.top + (v.oy + 10.5 * v.cell) / v.dpr,
+        bubbles: true,
+        cancelable: true,
+      };
+      c.dispatchEvent(new PointerEvent('pointerdown', init));
+      c.dispatchEvent(new PointerEvent('pointerup', init));
+      // report what steerToward should have computed, so a failure explains
+      // itself instead of just showing an empty queue
+      const px = (init.clientX - r.left) * v.dpr;
+      const py = (init.clientY - r.top) * v.dpr;
+      return {
+        queue: g.queue,
+        gx: Math.floor((px - v.ox) / v.cell),
+        gy: Math.floor((py - v.oy) / v.cell),
+        view: v,
+        rect: { left: r.left, top: r.top, w: r.width, h: r.height },
+        head: g.snake[0],
+        dir: g.dir,
+        state: g.state,
+      };
+    });
+    await page2.waitForTimeout(200);
+    check(
+      '2D: tap-to-steer works',
+      q2.queue.length === 1 && q2.queue[0].x === 1 && q2.queue[0].y === 0,
+      JSON.stringify(q2)
     );
-    await page2.waitForTimeout(450);
-    const sDir2 = await page2.evaluate(() => window.__game.dir);
-    check('2D: tap-to-steer works', sDir2.x === 1 && sDir2.y === 0, JSON.stringify(sDir2));
     await page2.evaluate(() => {
       document.getElementById('opt-obstacles').checked = false;
       window.__game.start(); // fresh centered snake: max wall-runway before pausing

@@ -431,6 +431,17 @@
               });
             })
             .catch(function () {});
+
+          // The worker answering THIS page load is still the previous one, so
+          // it serves the previous build no matter how fresh the new worker is;
+          // the new build lands from the next load on. Tell the player instead
+          // of reloading underneath them: an automatic reload here fires on
+          // any page (it cannot know a run is precious) and would throw away a
+          // live game, a death screen, or an in-progress menu visit. The toast
+          // is visible during play, unlike the menu-only row.
+          navigator.serviceWorker.addEventListener('controllerchange', function () {
+            if (window.__notifyUpdate) window.__notifyUpdate();
+          });
         });
       }
     </script>

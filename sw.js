@@ -13,11 +13,15 @@
  *     Deep links (?theme=volcano&seed=7) are shareable, so keying on the raw
  *     URL minted a permanent cache entry per shared link - unbounded growth
  *     that nothing ever evicted.
+ *  4. The app's own versioned assets are NETWORK-FIRST (cache fallback); only
+ *     the CDN engine stays cache-first. Cache-first meant the first load after
+ *     a deploy always ran the previous build, so a shipped fix looked like it
+ *     had not landed until a hard refresh.
  *
  * No build step: the cache name is a manual version. Bump it whenever shipped
  * assets change, which is what triggers the "new version" refresh prompt.
  */
-const CACHE = 'snake-v7';
+const CACHE = 'snake-v8';
 const LOCAL = [
   './',
   './index.html',
@@ -102,9 +106,61 @@ self.addEventListener('message', (e) => {
   }
 });
 
+// Is this one of the app's own versioned assets? Those must never be served
+// stale: a cache-first read means the FIRST load after a deploy silently runs
+// the PREVIOUS build (which is exactly how a shipped camera fix looked like it
+// "hadn't worked" until a hard refresh). The CDN engine never changes, so it
+// stays cache-first.
+function isLocalAsset(request) {
+  try {
+    const url = new URL(request.url);
+    if (url.origin !== self.location.origin) return false;
+    return precachedPaths.has(url.pathname);
+  } catch (e) {
+    return false;
+  }
+}
+
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const key = cacheKey(e.request);
+
+  // Versioned app assets: NETWORK-FIRST with cache fallback. Always fresh when
+  // online; still completely usable offline from the precache.
+  // (The origin serves `max-age=0, must-revalidate`, so the browser HTTP cache
+  // revalidates too and cannot reintroduce staleness underneath us. If that
+  // ever changes, add { cache: 'no-cache' } to the fetch below.)
+  if (isLocalAsset(e.request)) {
+    e.respondWith(
+      fetch(e.request)
+        .then((res) => {
+          // Only durable successes are revalidated into the cache, so a failed
+          // or partial response can never overwrite a good precached copy.
+          if (res && (res.ok || res.type === 'opaque')) {
+            const copy = res.clone();
+            caches
+              .open(CACHE)
+              .then((c) => c.put(key, copy))
+              .catch(() => {});
+          }
+          return res;
+        })
+        .catch(() =>
+          caches.match(key).then((hit) => {
+            if (hit) return hit;
+            // Offline and not cached: a navigation still gets the app shell so
+            // a deep link does not dead-end on a browser error page.
+            if (e.request.mode === 'navigate')
+              return caches.match(new URL('./index.html', self.location.href).toString());
+            return Response.error();
+          })
+        )
+    );
+    return;
+  }
+
+  // Everything else (the CDN engine, anything not precached): cache-first,
+  // revalidating in the background. Unchanged.
   e.respondWith(
     caches.match(key).then((hit) => {
       const go = fetch(e.request)

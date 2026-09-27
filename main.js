@@ -2071,6 +2071,11 @@
       } catch (e2) {}
     }, 600);
   });
+  // A new worker took over, so this page is running the previous build. Say so
+  // rather than reloading: an automatic refresh would destroy a live run.
+  window.__notifyUpdate = function () {
+    say(t('update_t'), true);
+  };
   // PWA install: surfaced only when the browser fires beforeinstallprompt
   var deferredInstall = null;
   window.addEventListener('beforeinstallprompt', function (e) {
