@@ -1,7 +1,8 @@
 /* Resolutions matrix: real 2025-2026 phone/tablet/desktop viewports (CSS px).
- * Asserts the auto-fit camera keeps head+food on screen (the framing
- * guarantee that replaced the old edge arrow), grabs a screenshot per
- * device into .test-shots/ for eyeballing, fails on any error.
+ * Asserts the fixed-zoom camera frames the WHOLE board and holds a steady
+ * radius on every device (the guarantee that replaced the old edge arrow),
+ * grabs a screenshot per device into .test-shots/ for eyeballing, fails on
+ * any error.
  * Run: `npm run test:resolutions`. */
 const fs = require('fs');
 const path = require('path');
@@ -66,8 +67,9 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
       check(d.name + ': boots', (await g(page, 'state')) === 'menu');
       await page.screenshot({ path: path.join(SHOTS, d.name + '-menu.png') });
       // worst case: snake starts one corner, food the other; wrap keeps the
-      // run alive unattended. Contract: the auto-fit camera always frames
-      // BOTH head and food — no edge arrow needed anymore.
+      // run alive unattended. Contract: the camera zoom is FIXED for the
+      // viewport and the whole board is always framed — no edge arrow needed,
+      // and no zoom pumping as the food moves.
       await page.evaluate(() => {
         document.getElementById('opt-wrap').checked = true;
         window.__game.start();
@@ -75,22 +77,36 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         window.__game.setDir(1, 0);
         window.__game.setFood(19, 19);
       });
-      await page.waitForTimeout(1500); // target + radius settle onto the run
-      // 3 samples across live ticks: every one must keep both on screen
-      // (project() is exact per sample — no DOM staleness involved)
+      await page.waitForTimeout(1500); // radius eases onto the fixed fit
+      // 3 samples across live ticks: every one must keep the whole board on
+      // screen and hold the exact same radius (project() is exact per sample,
+      // so there is no DOM staleness involved).
       let headOk = true,
         foodOk = true,
-        radiusOk = true,
+        boardOk = true,
+        fitOk = true,
+        steadyOk = true,
         worst = 0;
+      const seenR = [];
+      const fit = await g(page, 'fitRadius');
       for (let s = 0; s < 3; s++) {
         const sample = await page.evaluate(() => {
-          const sc = window.__game.snake[0];
-          const fc = window.__game.food;
+          const g = window.__game;
+          const sc = g.snake[0];
+          const fc = g.food;
           if (!sc || !fc) return null;
+          // every cell of the board, not just head+food
+          let cells = 0;
+          for (let x = 0; x < 20; x++)
+            for (let y = 0; y < 20; y++) {
+              const p = g.project(x, y);
+              if (p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1) cells++;
+            }
           return {
-            head: window.__game.project(sc.x, sc.y),
-            food: window.__game.project(fc.x, fc.y),
-            radius: window.__game.radius,
+            head: g.project(sc.x, sc.y),
+            food: g.project(fc.x, fc.y),
+            cells,
+            radius: g.radius,
           };
         });
         if (!sample) {
@@ -101,12 +117,20 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         if (m > worst) worst = m;
         if (!inside(sample.head)) headOk = false;
         if (!inside(sample.food)) foodOk = false;
-        if (!(sample.radius >= 10 && sample.radius <= 48)) radiusOk = false;
+        if (sample.cells !== 400) boardOk = false;
+        if (Math.abs(sample.radius - fit) > 0.6) fitOk = false;
+        seenR.push(sample.radius);
         await page.waitForTimeout(150);
       }
       check(d.name + ': head framed on all samples', headOk);
       check(d.name + ': food framed on all samples (no arrow needed)', foodOk, 'worst=' + worst.toFixed(2));
-      check(d.name + ': radius sane', radiusOk);
+      check(d.name + ': whole board framed (400/400 cells)', boardOk);
+      check(d.name + ': zoom equals fixed fit', fitOk, 'fit=' + fit);
+      check(
+        d.name + ': zoom steady across samples',
+        Math.max(...seenR) - Math.min(...seenR) < 0.6,
+        seenR.join('/')
+      );
       await page.waitForTimeout(600);
       const fps = await page.evaluate(() => window.__game.perf().fps);
       console.log('info  ' + d.name + ': fps=' + fps);

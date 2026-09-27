@@ -774,7 +774,28 @@ async function newPage(browser, blockCDN) {
       await page.evaluate((i) => window.__game.setTheme(i), idx);
       check('biome: ' + name + ' applied', (await g(page, 'theme')) === name, await g(page, 'theme'));
     }
-    check('biome: stars only on Space', await page.evaluate(() => !window.__stars.visible));
+    // Report the scene precondition instead of dereferencing it blindly. This
+    // page was re-navigated above, so if WebGL happened to be unavailable the
+    // game boots its 2D fallback and there is no 3D scene at all: every earlier
+    // check still passes, and a bare `window.__stars.visible` would throw an
+    // opaque harness error that aborts the rest of the run. Name the real
+    // cause (mode + stashed init error) so an environment failure is
+    // diagnosable rather than mysterious.
+    const sceneState = await page.evaluate(() => ({
+      mode: window.__game.mode,
+      hasScene: !!window.__stars,
+      initErr: window.__initErr || null,
+    }));
+    check(
+      'biome: 3D scene present after re-navigation',
+      sceneState.mode === '3d' && sceneState.hasScene,
+      JSON.stringify(sceneState)
+    );
+    check(
+      'biome: stars only on Space',
+      sceneState.hasScene && !(await page.evaluate(() => window.__stars.visible)),
+      JSON.stringify(sceneState)
+    );
 
     // Click-to-steer: click the board cell right of the head while heading up.
     // Paused + settled camera: fully deterministic (framing keeps easing live).
@@ -808,18 +829,28 @@ async function newPage(browser, blockCDN) {
       JSON.stringify(sQueue)
     );
 
-    // Auto-fit framing (replaces the old edge arrow): head AND food stay on
-    // screen in every situation. NDC |.|<=1 is visible; head gets the 0.9
-    // comfort bound, food the 0.97 edge bound. All settles run paused so the
-    // geometry is exact (framing runs while paused, snake frozen).
+    // Fixed framing (replaces the old edge arrow): the zoom is a pure function
+    // of the viewport, and the WHOLE board is framed at every screen size, so
+    // head and food are on screen in every situation. NDC |.|<=1 is visible;
+    // head gets the 0.9 comfort bound, food the 0.97 edge bound. All settles run
+    // paused so the geometry is exact (framing runs while paused, snake frozen).
     const frameNow = async () =>
       page.evaluate(() => {
         const s = window.__game.snake[0];
         const f = window.__game.food;
+        // every cell, so "whole board framed" is measured, not assumed
+        let cells = 0;
+        for (let x = 0; x < 20; x++)
+          for (let y = 0; y < 20; y++) {
+            const p = window.__game.project(x, y);
+            if (p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1) cells++;
+          }
         return {
           head: window.__game.project(s.x, s.y),
           food: window.__game.project(f.x, f.y),
           radius: window.__game.radius,
+          fit: window.__game.fitRadius,
+          cells,
         };
       });
     const inScreen = (p, b) => p && !p.behind && Math.abs(p.x) <= b && Math.abs(p.y) <= b;
@@ -840,7 +871,16 @@ async function newPage(browser, blockCDN) {
       inScreen(frameFar.head, 0.9) && inScreen(frameFar.food, 0.97),
       JSON.stringify(frameFar)
     );
-    check('frame: radius opens up for distance', frameFar.radius > 30, String(frameFar.radius));
+    check(
+      'frame: whole board framed at far food (400 cells)',
+      frameFar.cells === 400,
+      'cells=' + frameFar.cells
+    );
+    check(
+      'frame: zoom equals the fixed fit',
+      Math.abs(frameFar.radius - frameFar.fit) < 0.6,
+      frameFar.radius + ' vs fit ' + frameFar.fit
+    );
     // wrap-adjacent: raw span still framed (no shortcut zoom)
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = true;
@@ -857,7 +897,9 @@ async function newPage(browser, blockCDN) {
       inScreen(frameWrap.head, 0.9) && inScreen(frameWrap.food, 0.97),
       JSON.stringify(frameWrap)
     );
-    // zoom-out snaps instantly (an eat never loses the new food)...
+    // The regression this locks down: the zoom must NOT react to where the food
+    // is. Adjacent food, opposite-corner food, then adjacent again — the radius
+    // has to be identical every time (it used to pump by 5-15 world units).
     await page.evaluate(() => {
       window.__game.start();
       window.__game.pause();
@@ -870,7 +912,6 @@ async function newPage(browser, blockCDN) {
     await page.evaluate(() => window.__game.setFood(0, 0));
     await page.waitForTimeout(400);
     const rFar = (await frameNow()).radius;
-    // ...zoom-in eases down gently (no bounce)
     await page.evaluate(() => {
       const s = window.__game.snake[0];
       window.__game.setFood(s.x + 1, s.y);
@@ -878,24 +919,25 @@ async function newPage(browser, blockCDN) {
     await page.waitForTimeout(2500);
     const rNear2 = (await frameNow()).radius;
     check(
-      'frame: radius snaps out, eases in',
-      rFar > rNear1 + 5 && rNear2 < rFar - 3,
+      'frame: zoom fixed regardless of food distance',
+      Math.abs(rFar - rNear1) < 0.6 && Math.abs(rNear2 - rNear1) < 0.6,
       [rNear1, rFar, rNear2].join('/')
     );
-    // inspection hold: manual zoom wins briefly, auto-fit resumes after
+    // inspection hold: manual zoom wins briefly, then the fixed frame resumes
     await page.evaluate(() => window.__game.setFood(19, 19));
     await page.waitForTimeout(1200);
+    const fitBefore = (await frameNow()).fit;
     await page.evaluate(() => window.__game.setRadius(14, 1500));
     await page.waitForTimeout(600);
     const rHold = (await frameNow()).radius;
     await page.waitForTimeout(2500);
     const rResumed = (await frameNow()).radius;
     check(
-      'frame: inspection hold then auto resume',
-      rHold < 20 && rResumed > 30,
-      [rHold, rResumed].join('/')
+      'frame: inspection hold then fixed resume',
+      rHold < 20 && Math.abs(rResumed - fitBefore) < 0.6,
+      [rHold, rResumed, 'fit', fitBefore].join('/')
     );
-    // top-down view frames identically
+    // top-down view frames the whole board too, at its own fit distance
     await page.evaluate(() => {
       document.getElementById('opt-cam').value = 'top';
       document.getElementById('opt-wrap').checked = false;
@@ -911,6 +953,12 @@ async function newPage(browser, blockCDN) {
       'frame: top-down keeps both on screen',
       inScreen(frameTop.head, 0.9) && inScreen(frameTop.food, 0.97),
       JSON.stringify(frameTop)
+    );
+    check('frame: top-down frames whole board', frameTop.cells === 400, 'cells=' + frameTop.cells);
+    check(
+      'frame: top-down zoom equals its own fit',
+      Math.abs(frameTop.radius - frameTop.fit) < 0.6,
+      frameTop.radius + ' vs fit ' + frameTop.fit
     );
     await page.evaluate(() => {
       document.getElementById('opt-cam').value = 'follow';
@@ -1738,13 +1786,25 @@ async function newPage(browser, blockCDN) {
       (await g(page2, 'state')) === 'playing',
       await g(page2, 'state')
     );
+    // Score 10 by steering food into the path, rather than placing it once and
+    // hoping the snake randomly re-crosses the respawned food inside 5s. The
+    // old version was luck- and load-dependent and flaked under CPU pressure.
     await page2.evaluate(() => {
-      const s = window.__game.snake,
-        dd = window.__game.dir;
-      window.__game.setFood(s[0].x + dd.x, s[0].y + dd.y);
+      window.__scoreDrive = setInterval(() => {
+        const gme = window.__game;
+        if (gme.state !== 'playing') return;
+        const s = gme.snake[0];
+        if (!s) return;
+        const d = gme.dir;
+        gme.setFood((s.x + d.x + 20) % 20, (s.y + d.y + 20) % 20);
+      }, 30);
     });
-    await page2.waitForFunction(() => window.__game.score >= 10, null, { timeout: 5000 });
-    check('2D: food + scoring works', true);
+    const scored = await page2
+      .waitForFunction(() => window.__game.score >= 10, null, { timeout: 20000 })
+      .then(() => true)
+      .catch(() => false);
+    await page2.evaluate(() => clearInterval(window.__scoreDrive));
+    check('2D: food + scoring works', scored, 'score=' + (await g(page2, 'score')));
     await page2.evaluate(() => {
       window.__game.start();
       window.__game.pause();

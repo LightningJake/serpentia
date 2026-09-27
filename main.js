@@ -2305,6 +2305,7 @@
         theta -= (mx - pinchMX) * 0.008;
         phi -= (my - pinchMY) * 0.007;
         phi = Math.max(0.35, Math.min(1.25, phi));
+        applyFit(); // keep the board framed at the new orbit angle
         setRadiusHold(radius - (d - pinchD) * 0.05);
       }
       pinchMX = mx;
@@ -2359,18 +2360,121 @@
   var theta = Math.PI / 4,
     phi = 0.95,
     radius = 24;
-  // Auto-fit framing: FIT_BASE at the head, growing with head-food distance
-  // so both stay on screen (replaces the old edge arrow entirely).
-  var FIT_BASE = 24,
-    FIT_K = 1.2,
-    FIT_MAX = 48;
-  // Look-target food weight ramps with distance: near food keeps the snake
-  // centered (0.28), far food pulls the target toward it (0.42) so both ends
-  // fit inside a readable radius on narrow portrait screens too.
+  // Fixed framing. The camera radius is derived from the board's actual 3D
+  // corners for the CURRENT orbit angle, so it is a pure function of screen
+  // size and camera orientation - never of where the snake or food is. That
+  // kills the zoom pumping ("zooms out, then zooms back in") while keeping the
+  // whole board framed, including on narrow portrait screens where the old
+  // head+food auto-fit left half the board off-screen.
+  //
+  // We fit the real corner points rather than a bounding sphere: the board is
+  // a FLAT box, so a sphere is hugely conservative (it would force the whole
+  // frame to fit the board's 45-degree diagonal vertically and shrink the game
+  // to a stamp on desktop). Projecting the 8 corners and solving for the
+  // distance that keeps them all inside the frustum is both exact and tight.
+  //
+  // Because the solve re-runs when the player orbits, dragging the view keeps
+  // the board framed at any angle instead of clipping it.
+  var FIT_FILL = 0.94; // fraction of the NDC box the board may span
+  var FIT_HALF = (GRID * CELL) / 2 + 0.5, // board half-extent incl. the wall lip
+    FIT_TOP = 1.8; // tallest wall style (crystal)
+  var FIT_R = 38; // live fit radius, refreshed on resize and on orbit
+  var lastTopView = false; // last seen top-down state, to re-fit on toggle
+  // 8 corners of the board box, in world space
+  var FIT_CORNERS = [];
+  for (var fcx = 0; fcx < 8; fcx++)
+    FIT_CORNERS.push({
+      x: fcx & 1 ? FIT_HALF : -FIT_HALF,
+      y: fcx & 2 ? FIT_TOP : 0,
+      z: fcx & 4 ? FIT_HALF : -FIT_HALF,
+    });
+  // Largest NDC magnitude the board reaches at a given distance. Monotonically
+  // DEcreasing in R (further away = smaller on screen), which is what makes the
+  // bisection below valid. A corner behind the camera counts as infinitely far
+  // too big, so it is treated as +Infinity rather than a magic constant.
+  function fitOvershoot(R, usePhi, useTheta, tX, tY) {
+    var sp = Math.sin(usePhi),
+      cp = Math.cos(usePhi),
+      st = Math.sin(useTheta),
+      ct = Math.cos(useTheta);
+    var cx = R * sp * st,
+      cy = R * cp,
+      cz = R * sp * ct;
+    // camera basis, looking at the origin (the target is always board centre)
+    var fl = Math.hypot(cx, cy, cz) || 1;
+    var fx = -cx / fl,
+      fy = -cy / fl,
+      fz = -cz / fl;
+    // right = normalize(cross(forward, worldUp)), worldUp = +Y
+    var rx = fz,
+      ry = 0,
+      rz = -fx;
+    var rl = Math.hypot(rx, ry, rz);
+    if (rl < 1e-6) {
+      // looking straight down: forward is parallel to worldUp, so pick any
+      // perpendicular reference instead of dividing by ~0
+      rx = 1;
+      ry = 0;
+      rz = 0;
+      rl = 1;
+    }
+    rx /= rl;
+    ry /= rl;
+    rz /= rl;
+    // up = cross(right, forward)
+    var ux = ry * fz - rz * fy,
+      uy = rz * fx - rx * fz,
+      uz = rx * fy - ry * fx;
+    var worst = 0;
+    for (var i = 0; i < FIT_CORNERS.length; i++) {
+      var P = FIT_CORNERS[i];
+      var vx = P.x - cx,
+        vy = P.y - cy,
+        vz = P.z - cz;
+      var zc = vx * fx + vy * fy + vz * fz; // depth in front of the camera
+      if (zc <= 1e-4) return Infinity;
+      var xc = vx * rx + vy * ry + vz * rz;
+      var yc = vx * ux + vy * uy + vz * uz;
+      var m = Math.max(Math.abs(xc) / (tX * zc), Math.abs(yc) / (tY * zc));
+      if (m > worst) worst = m;
+    }
+    return worst;
+  }
+  // Smallest radius that keeps every board corner inside the frustum at the
+  // given orbit, via bisection on the monotone fitOvershoot().
+  function computeFitRadius(aspect, usePhi, useTheta) {
+    var tY = Math.tan((camera.fov * Math.PI) / 360);
+    var tX = tY * aspect;
+    var lo = 4,
+      hi = 400;
+    // hi is always far enough: the whole board is a few tens of units across
+    var guard = 0;
+    while (fitOvershoot(hi, usePhi, useTheta, tX, tY) > FIT_FILL && guard++ < 8) hi *= 2;
+    for (var it = 0; it < 40; it++) {
+      var mid = (lo + hi) / 2;
+      if (fitOvershoot(mid, usePhi, useTheta, tX, tY) > FIT_FILL) lo = mid;
+      else hi = mid;
+    }
+    return hi;
+  }
+  function applyFit() {
+    if (mode !== '3d' || !camera) return;
+    var topNow = !!($('opt-cam') && $('opt-cam').value === 'top');
+    FIT_R = computeFitRadius(camera.aspect, topNow ? 0.16 : phi, theta);
+    // fog is expressed in world units, so it has to track the fit distance or
+    // a wide portrait frame would sit entirely inside the fog band. The band is
+    // pushed well past the board so only the distant scenery hazes over.
+    if (scene.fog) {
+      scene.fog.near = FIT_R * 0.85;
+      scene.fog.far = FIT_R * 2.4;
+    }
+  }
+  // Look-target food weight is gone with the auto-fit: the whole board is
+  // framed, so the camera no longer has to chase the food.
   var radiusHold = 0, // wheel/pinch inspection override (absolute radius)
-    holdUntil = 0; // auto-fit resumes after this timestamp
+    holdUntil = 0; // fixed framing resumes after this timestamp
   function setRadiusHold(r) {
-    radiusHold = Math.max(10, Math.min(48, r));
+    radiusHold = Math.max(10, Math.min(FIT_R * 1.8, r));
     holdUntil = performance.now() + 4000;
   }
   var camTarget = null,
@@ -2406,7 +2510,8 @@
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x070b18);
     scene.fog = new THREE.Fog(0x070b18, 30, 70);
-    camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
+    applyFit(); // fixed framing for this viewport (also sets the fog band)
     window.__ray = new THREE.Raycaster();
 
     window.__hemi = new THREE.HemisphereLight(0x8fb4ff, 0x0a0f22, 0.9);
@@ -2697,6 +2802,7 @@
       phi = Math.max(0.35, Math.min(1.25, phi));
       px = e.clientX;
       py = e.clientY;
+      applyFit(); // keep the board framed at the new orbit angle
     });
     window.addEventListener('pointerup', function () {
       dragging = false;
@@ -3443,6 +3549,7 @@
       camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      applyFit(); // fixed framing tracks the new aspect
     } else fitCanvas();
   });
 
@@ -3711,42 +3818,30 @@
     }
     var camSel = $('opt-cam');
     var topView = !!(camSel && camSel.value === 'top');
-    // Auto-fit framing: the camera always keeps BOTH head and food on screen.
-    // The look target is head-biased (the snake stays prominent); the radius
-    // grows with the wrap-aware head-food distance. Zoom-out is instant so an
-    // eat never loses the new food; zoom-in eases down gently. Wheel/pinch
-    // inspection temporarily overrides, then auto-fit resumes on its own.
-    var wantR = radius;
-    if (snake.length && (state === 'playing' || state === 'paused')) {
-      var hw2 = gridToWorld(snake[0].x, snake[0].y);
-      var fw2 = gridToWorld(food.x, food.y);
-      // raw span (no wrap shortcut): the food is RENDERED at its cell, so the
-      // frame must cover the true on-board distance — even when the snake
-      // could take a shorter way through the wall
-      var fdx = fw2.x - hw2.x,
-        fdz = fw2.z - hw2.z;
-      var fdist = Math.sqrt(fdx * fdx + fdz * fdz);
-      var foodW = 0.28 + 0.16 * Math.min(1, fdist / 20);
-      // head-biased look target in every view (top-down tracks the same way;
-      // a center-fixed overhead view loses the snake at the edges)
-      if (!topView && !$('opt-follow').checked) desiredTarget.set(0, 0, 0);
-      else desiredTarget.set(hw2.x + fdx * foodW, 0, hw2.z + fdz * foodW);
-      camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
-      wantR = FIT_BASE + fdist * FIT_K;
-      if (wantR > FIT_MAX) wantR = FIT_MAX;
-    } else {
-      if (topView) desiredTarget.set(0, 0, 0);
-      else if ($('opt-follow').checked) {
-        var hh = snake.length ? gridToWorld(snake[0].x, snake[0].y) : { x: 0, z: 0 };
-        desiredTarget.set(hh.x, 0, hh.z);
-      } else desiredTarget.set(0, 0, 0);
-      camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
-      wantR = FIT_BASE;
+    // Top-down is a much shallower pitch, so it needs its own fit distance.
+    // Detected here rather than on a 'change' event so a programmatic value
+    // set (settings restore, test hooks) is picked up too.
+    if (topView !== lastTopView) {
+      lastTopView = topView;
+      applyFit();
     }
+    // Fixed framing. The radius is a pure function of the viewport (FIT_R,
+    // refreshed on resize) - it NEVER depends on where the snake or the food
+    // is, so there is no zoom pumping while playing. The look target stays on
+    // the board centre for the same reason: chasing the head meant the frame
+    // drifted even when the zoom was steady.
+    //
+    // The target is therefore ALWAYS the board centre, which makes the
+    // "Follow cam" toggle (opt-follow) inert: following only ever existed to
+    // keep the head+food pair inside a zoomed frame, and the whole board is
+    // now visible without it. The control is kept so persisted settings still
+    // load, but it no longer moves the camera. Removing it is a product call.
+    desiredTarget.set(0, 0, 0);
+    camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
+    var wantR = FIT_R;
     if (now < holdUntil && radiusHold > 0)
-      radius = radiusHold; // inspection: instant, like the old wheel
-    else if (wantR > radius) radius = wantR;
-    else radius += (wantR - radius) * Math.min(1, cdt * 2.5);
+      radius += (radiusHold - radius) * Math.min(1, cdt * 9); // inspection: quick, still smooth
+    else radius += (wantR - radius) * Math.min(1, cdt * 4);
     var sx = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     var sy = shake > 0 ? (Math.random() - 0.5) * shake * 0.9 : 0;
     if (shake > 0) shake = Math.max(0, shake - dt * 1.4);
@@ -4028,18 +4123,35 @@
       var v = new window.THREE.Vector3(w.x, 0.5, w.z).project(camera);
       return { x: v.x, y: v.y, behind: v.z > 1 };
     },
+    // NDC of a raw world point: lets the framing suites measure the true board
+    // corners (not grid cells) against the frustum.
+    worldProject: function (x, y, z) {
+      if (mode !== '3d' || !window.THREE || !camera) return null;
+      var v = new window.THREE.Vector3(x, y, z).project(camera);
+      return { x: v.x, y: v.y, behind: v.z > 1 };
+    },
     setCam: function (t, p) {
       theta = t;
       phi = Math.max(0.16, Math.min(1.25, p));
+      applyFit();
     },
     // Inspection zoom for tests: absolute radius held for ms (default 4000),
-    // exactly like a wheel/pinch gesture. Auto-fit resumes after the hold.
+    // exactly like a wheel/pinch gesture. The fixed frame resumes after it.
     setRadius: function (r, ms) {
-      radiusHold = Math.max(10, Math.min(48, r));
+      radiusHold = Math.max(10, Math.min(FIT_R * 1.8, r));
       holdUntil = performance.now() + (ms == null ? 4000 : ms);
     },
     get radius() {
       return Math.round(radius * 10) / 10;
+    },
+    // The fixed fit radius for the current viewport, so suites can assert
+    // "zoom equals the fit" instead of hardcoding the old 10..48 window.
+    get fitRadius() {
+      return Math.round(FIT_R * 10) / 10;
+    },
+    recomputeFit: function () {
+      applyFit();
+      return this.fitRadius;
     },
     // Read-only camera basis for the swipe suite: it must wait until the
     // orbit actually settles before asserting screen-absolute steering.
