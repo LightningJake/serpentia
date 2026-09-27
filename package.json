@@ -13,7 +13,8 @@
     "test:edge": "node e2e/edge.js",
     "test:resolutions": "node e2e/resolutions.js",
     "test:live": "node e2e/live.js",
-    "test:all": "npm run test:unit && npm run test:scan && npm run test:contrast && npm test && npm run test:mobile && npm run test:edge && npm run test:resolutions && npm run test:perf",
+    "test:sw-version": "node test/sw-version.js",
+    "test:all": "npm run test:unit && npm run test:scan && npm run test:contrast && npm run test:sw-version && npm test && npm run test:mobile && npm run test:edge && npm run test:resolutions && npm run test:perf",
     "serve": "node serve.js",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

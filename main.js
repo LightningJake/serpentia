@@ -18,6 +18,7 @@
   var BONUS_TTL = 7000; // bonus pickup lifetime (ms of play time)
   var BONUS_EVERY = 5; // spawn a bonus every N regular foods
   var SHIELD_TTL = 9000; // shield pickup lifetime (ms of play time)
+  var SHIELD_PHASE = 1500; // ghost window when a shield cannot find a safe heading
   var SHIELD_EVERY = 7; // spawn a shield every N regular foods
   var DESERT_FOOD_TTL = 20000; // desert rule: uneaten food withers after 20s
   var EMBER_WARN = 2000; // volcano rule: ember telegraphs this long before igniting
@@ -59,6 +60,7 @@
     bonusLeft = 0; // bonus pickup {x,y} + ms of play time remaining
   var shield = null,
     shieldLeft = 0,
+    shieldPhase = 0,
     hasShield = false; // shield pickup {x,y} + TTL; hasShield = charge held
   var slideHeld = null; // ice rule: turn stashed one tick (momentum pipeline)
   var embers = []; // volcano rule: [{x, y, born}] telegraph -> burn -> gone
@@ -256,7 +258,6 @@
   var SETTING_IDS = [
     'opt-wrap',
     'opt-obstacles',
-    'opt-follow',
     'opt-sound',
     'opt-shadows',
     'opt-colorblind',
@@ -1397,6 +1398,7 @@
     bonus = null;
     bonusLeft = 0;
     hasShield = false;
+    shieldPhase = 0;
     slideHeld = null;
     embers = [];
     emberAcc = 0;
@@ -1661,20 +1663,24 @@
     var willEatShield = !!(shield && nx === shield.x && ny === shield.y);
     var willGrow = willEat || willEatBonus;
     var cell = { x: nx, y: ny };
-    for (var oi = 0; oi < obstacles.length; oi++)
+    // A shield spent while fully boxed in sets shieldPhase: ghost through our
+    // own body / blocks / embers long enough to get out. Walls still kill, so
+    // the snake can never leave the board.
+    var phased = shieldPhase > 0;
+    for (var oi = 0; !phased && oi < obstacles.length; oi++)
       if (obstacles[oi].x === nx && obstacles[oi].y === ny) {
         if (tryShield()) return;
         die(t('die_ob'), cell);
         return;
       }
-    if (SnakeLogic.hitsBody(cell, snake, willGrow)) {
+    if (!phased && SnakeLogic.hitsBody(cell, snake, willGrow)) {
       if (tryShield()) return;
       die(t('die_self'), cell);
       return;
     }
     // volcano rule: ignited embers are lethal (telegraph phase is safe).
     // Ages advance on play time only, so pausing freezes telegraphs fairly.
-    for (var ei = 0; ei < embers.length; ei++) {
+    for (var ei = 0; !phased && ei < embers.length; ei++) {
       var em = embers[ei];
       if (em.x === nx && em.y === ny && em.age >= EMBER_WARN && em.age < EMBER_WARN + EMBER_BURN) {
         if (tryShield()) return;
@@ -3266,6 +3272,44 @@
     bonusLeft = 0;
     if (window.__bonusMesh) window.__bonusMesh.visible = false;
   }
+  // Which neighbouring cell could the head enter next tick without dying?
+  // Mirrors the collision rules in step() exactly (including the tail vacating,
+  // and food/bonus counting as growth) so a heading chosen here is genuinely
+  // survivable rather than merely plausible.
+  function safeDirFrom(x, y) {
+    var wrap = $('opt-wrap').checked;
+    var cands = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ];
+    for (var i = 0; i < cands.length; i++) {
+      var dx = cands[i][0],
+        dy = cands[i][1];
+      var np = { x: x + dx, y: y + dy };
+      if (wrap) np = SnakeLogic.wrapPos(np, GRID);
+      else if (!SnakeLogic.inBounds(np, GRID)) continue;
+      var oi;
+      for (oi = 0; oi < obstacles.length; oi++)
+        if (obstacles[oi].x === np.x && obstacles[oi].y === np.y) break;
+      if (oi < obstacles.length) continue;
+      var grows =
+        (food && food.x === np.x && food.y === np.y) || (bonus && bonus.x === np.x && bonus.y === np.y);
+      if (SnakeLogic.hitsBody(np, snake, grows)) continue;
+      var lit = false;
+      for (var ei = 0; ei < embers.length; ei++) {
+        var em = embers[ei];
+        if (em.x === np.x && em.y === np.y && em.age >= EMBER_WARN && em.age < EMBER_WARN + EMBER_BURN) {
+          lit = true;
+          break;
+        }
+      }
+      if (lit) continue;
+      return { x: dx, y: dy };
+    }
+    return null;
+  }
   // Shield pickup: rare, timed. Eating it holds one charge that survives
   // the next lethal crash (the step is ignored, the snake holds position).
   function spawnShield() {
@@ -3312,6 +3356,22 @@
     saveLife();
     unlock('shield1');
     updateHUD();
+    // Holding position is not enough on its own: the heading still points at
+    // whatever just killed us, so the very next tick re-enters the same cell
+    // and the run dies anyway -- players reported exactly that ("it said the
+    // shield broke, then the game ended"). Steer to a survivable neighbour so
+    // the charge is a real save, and clear stale queued turns so they cannot
+    // immediately steer back into the thing we just escaped.
+    var sd = safeDirFrom(snake[0].x, snake[0].y);
+    if (sd) {
+      dir = sd;
+      queue = [];
+      slideHeld = null;
+    } else {
+      // Boxed in on every side (a tight coil): no heading can save us, so
+      // ghost through our own body for a moment to get out. Walls still apply.
+      shieldPhase = SHIELD_PHASE;
+    }
     var hw = gridToWorld(snake[0].x, snake[0].y);
     burst({ x: hw.x, y: 0.7, z: hw.z }, 0x46e6ff, 20);
     showBanner(t('shield_saved'));
@@ -3619,6 +3679,12 @@
       shieldLeft -= dt * 1000;
       if (shieldLeft <= 0) hideShieldMesh();
     }
+    if (shieldPhase > 0 && state === 'playing') {
+      shieldPhase -= dt * 1000;
+      // self-resolving: the ghost ends the moment the head is somewhere a
+      // normal step would have survived, so it can never linger or be relied on
+      if (shieldPhase <= 0 || safeDirFrom(snake[0].x, snake[0].y)) shieldPhase = 0;
+    }
     // volcano embers age on play time in both modes (frozen in pause)
     if (state === 'playing' && biomeIs('Volcano')) {
       emberAcc += dt * 1000;
@@ -3836,11 +3902,13 @@
     // the board centre for the same reason: chasing the head meant the frame
     // drifted even when the zoom was steady.
     //
-    // The target is therefore ALWAYS the board centre, which makes the
-    // "Follow cam" toggle (opt-follow) inert: following only ever existed to
-    // keep the head+food pair inside a zoomed frame, and the whole board is
-    // now visible without it. The control is kept so persisted settings still
-    // load, but it no longer moves the camera. Removing it is a product call.
+    // The target is therefore ALWAYS the board centre, because the whole board
+    // is visible without zooming. The old "Follow cam" toggle that chased the
+    // head is gone: with the board always in frame there is nothing left for
+    // it to do, and a settings switch that silently does nothing is worse than
+    // no switch. Persisted settings are keyed by id, so an existing
+    // "opt-follow" entry in a returning player's saved settings is simply
+    // ignored.
     desiredTarget.set(0, 0, 0);
     camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
     var wantR = FIT_R;
@@ -3993,6 +4061,12 @@
     },
     get hasShield() {
       return hasShield;
+    },
+    get shieldPhase() {
+      return shieldPhase;
+    },
+    get biomeName() {
+      return LEVELS[themeIdx].name;
     },
     setShield: function (x, y, ttl) {
       shield = { x: x, y: y };

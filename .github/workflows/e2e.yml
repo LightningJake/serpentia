@@ -25,6 +25,7 @@ jobs:
       - run: npm run test:unit
       - run: npm run test:scan
       - run: npm run test:contrast
+      - run: npm run test:sw-version
       - run: npm run format:check
 
   e2e-desktop:

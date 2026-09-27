@@ -1358,7 +1358,7 @@ async function newPage(browser, blockCDN) {
     await page.waitForTimeout(500);
     const shotToast = (await page.locator('#toast').textContent()) || '';
     check('shot: button delivers picture', /Picture saved/.test(shotToast), shotToast);
-    // 3. shield: orb grants a charge, the charge blocks a wall death
+    // 3. shield: orb grants a charge, the charge SAVES the run
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = false;
       document.getElementById('opt-obstacles').checked = false;
@@ -1373,25 +1373,91 @@ async function newPage(browser, blockCDN) {
     await page.waitForFunction(() => window.__game.hasShield === true, null, { timeout: 5000 });
     check('shield: orb grants charge', true);
     check('shield: HUD pill shows', await page.locator('#pill-shield').isVisible());
-    await page.evaluate(() => {
-      window.__game.setSnake([{ x: 19, y: 5 }]);
-      window.__game.setDir(1, 0);
+    // Drive into the wall and let the run keep going: a charge that only
+    // delayed death by one tick used to end the run right here, which is what
+    // players reported ("it said the shield broke, then the game ended").
+    const shieldSave = await page.evaluate(() => {
+      const gme = window.__game;
+      gme.setSnake([{ x: 19, y: 5 }]);
+      gme.setDir(1, 0);
+      const before = gme.life.deathsBlocked || 0;
+      gme.step(); // crash -> charge absorbs and steers us clear
+      return { state: gme.state, dir: { ...gme.dir }, blocked: (gme.life.deathsBlocked || 0) - before };
     });
-    await page.waitForFunction(() => window.__game.hasShield === false, null, { timeout: 5000 });
-    const shieldLife = await g(page, 'life');
     check(
-      'shield: blocks wall death, charge spent',
-      shieldLife.deathsBlocked >= 1 && (await g(page, 'hasShield')) === false,
-      JSON.stringify({ life: shieldLife })
+      'shield: absorbs the crash and steers clear (not just one tick)',
+      shieldSave.state === 'playing' && shieldSave.dir.x === -1 && shieldSave.dir.y === 0,
+      JSON.stringify(shieldSave)
     );
-    // still pushing into the same wall with no charge left: the next tick kills
-    await page.waitForFunction(() => window.__game.state === 'over', null, { timeout: 5000 });
-    check('shield: single use — second crash kills', true);
+    // single use: with the charge spent, the very next crash must be fatal
+    const shieldSpent = await page.evaluate(() => {
+      const gme = window.__game;
+      gme.setSnake([{ x: 19, y: 5 }]);
+      gme.setDir(1, 0);
+      gme.step(); // crash with no charge left
+      return { state: gme.state, blocked: gme.life.deathsBlocked };
+    });
+    check(
+      'shield: single use — a later crash kills',
+      shieldSpent.state === 'over',
+      JSON.stringify({ state: shieldSpent.state, life: shieldSpent })
+    );
     check(
       'shield: guardian achievement earned',
       (await g(page, 'ach')).indexOf('shield1') >= 0,
       JSON.stringify(await g(page, 'ach'))
     );
+
+    // 3b. every lethal source must be survivable, not just walls. Driven by
+    // manual steps so each case is deterministic instead of racing the clock.
+    const shieldPaths = await page.evaluate(() => {
+      const gme = window.__game;
+      const out = [];
+      const grant = () => {
+        gme.start();
+        gme.pause();
+        gme.clearEmbers();
+        gme.setFood(0, 0);
+        gme.setSnake([{ x: 5, y: 5 }]);
+        gme.setDir(1, 0);
+        gme.setShield(6, 5, 90000);
+        gme.step();
+        return gme.hasShield;
+      };
+      const run = (name, setup) => {
+        if (!grant()) return out.push([name, false, 'grant failed']);
+        new Function('g', setup)(gme);
+        for (let i = 0; i < 6; i++) {
+          gme.step();
+          if (gme.state === 'over') break;
+        }
+        out.push([name, gme.state !== 'over', gme.state]);
+      };
+      run('self bite (2x2 coil)', 'g.setSnake([{x:5,y:5},{x:5,y:6},{x:6,y:6},{x:6,y:5}]); g.setDir(0,1);');
+      run(
+        'self bite (mid-body)',
+        'g.setSnake([{x:5,y:5},{x:5,y:6},{x:6,y:6},{x:6,y:5},{x:7,y:5},{x:8,y:5}]); g.setDir(1,0);'
+      );
+      run('ember', 'g.setSnake([{x:5,y:5}]); g.setDir(1,0); g.setEmber(6,5,2500);');
+      run('corner walled in', 'g.setSnake([{x:0,y:0},{x:1,y:0},{x:1,y:1},{x:0,y:1}]); g.setDir(0,-1);');
+      run(
+        'fully trapped (no safe heading)',
+        'g.setSnake([{x:5,y:5},{x:4,y:5},{x:4,y:4},{x:5,y:4},{x:6,y:4},{x:6,y:5},{x:6,y:6},{x:5,y:6},{x:4,y:6}]); g.setDir(1,0);'
+      );
+      return out;
+    });
+    for (const [nm, ok, st] of shieldPaths) check('shield survives: ' + nm, ok, 'ended=' + st);
+    const noCharge = await page.evaluate(() => {
+      const gme = window.__game;
+      document.getElementById('opt-wrap').checked = false;
+      gme.start();
+      gme.pause();
+      gme.setSnake([{ x: 19, y: 5 }]);
+      gme.setDir(1, 0);
+      gme.step();
+      return gme.state;
+    });
+    check('shield control: no charge still kills', noCharge === 'over', noCharge);
     // 4. per-biome music voices: all 8 keep the scheduler alive
     // (wrap on: the run must survive unattended while voices switch)
     await page.evaluate(() => {
