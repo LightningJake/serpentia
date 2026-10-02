@@ -17,16 +17,22 @@
   var SPEED_RAMP = 22; // foods to decay ~37% of the remaining headroom (see tickForFoods)
   var LERP_SPEED = 18; // was 14 — snappier slide
   var BONUS_TTL = 7000; // bonus pickup lifetime (ms of play time)
-  var BONUS_EVERY = 5; // spawn a bonus every N regular foods
+  var BONUS_EVERY = 5; // min regular foods between bonus spawns (cooldown, not a modulo)
+  var BONUS_MAX = 3; // hard ceiling on concurrent pink orbs
   var SHIELD_TTL = 9000; // shield pickup lifetime (ms of play time)
   var SHIELD_PHASE = 1500; // ghost window when a shield cannot find a safe heading
-  var SHIELD_EVERY = 7; // spawn a shield every N regular foods
+  var SHIELD_EVERY = 7; // min regular foods between shield spawns
+  var MAZE_OBSTACLE_START = 12; // maze mode opens with real corridor structure
+  var MAZE_OBSTACLE_PER_LEVEL = 4; // ...and keeps thickening
   var DESERT_FOOD_TTL = 20000; // desert rule: uneaten food withers after 20s
   var EMBER_WARN = 2000; // volcano rule: ember telegraphs this long before igniting
   var EMBER_BURN = 3000; // volcano rule: ignited ember stays lethal this long
   var EMBER_EVERY = 5000; // volcano rule: new ember cadence while playing
   var EMBER_MAX = 3; // volcano rule: max concurrent embers
-  var COMBO_WINDOW = 5000; // eats within this gap chain the combo
+  var COMBO_WINDOW = 5000; // base gap that chains a combo; shrinks per step (see SnakeLogic.comboWindow)
+  var COMBO_HOT = 8; // combo at/above this paints the HUD pill as a high-risk chain
+  var BANK_MIN = 5; // shortest chain worth cashing out on the pause card
+  var BANK_UNIT = 5; // bank = BANK_UNIT * combo^2 * prestige
   var FOODS_PER_LEVEL = 6; // goal: foods per level
   var OBSTACLE_START = 4; // rocks on a fresh obstacles run
   var OBSTACLE_PER_LEVEL = 3;
@@ -57,12 +63,20 @@
   var score = 0,
     foodsEaten = 0,
     best = 0;
-  var bonus = null,
-    bonusLeft = 0; // bonus pickup {x,y} + ms of play time remaining
+  // Bonus orbs are a small pool, not a singleton. `BONUS_EVERY` used to be a
+  // bare `foodsEaten % 5`, which meant at most one pink orb could ever exist and
+  // its arrival was arithmetic rather than an event. bonusCap() lets the late
+  // game - the part where a mistake is actually expensive - carry several at
+  // once, so the orbs stop being a formality and become the run.
+  var bonuses = []; // [{x, y, left, bornAt}] live bonus orbs
   var shield = null,
     shieldLeft = 0,
     shieldPhase = 0,
     hasShield = false; // shield pickup {x,y} + TTL; hasShield = charge held
+  // Entity pacing bookkeeping: foodsEaten when each orb type last spawned, so
+  // cadence is a cooldown ("not yet") rather than a calendar slot.
+  var lastBonusFood = 0,
+    lastShieldFood = 0;
   var slideHeld = null; // ice rule: turn stashed one tick (momentum pipeline)
   var embers = []; // volcano rule: [{x, y, born}] telegraph -> burn -> gone
   var emberAcc = 0,
@@ -84,6 +98,14 @@
   var skinId = 'classic'; // active snake skin (achievement-gated)
   var combo = 0,
     lastEatAt = 0; // combo multiplier chain
+  var comboWindowMs = COMBO_WINDOW; // allowance currently in effect (shrinks as the chain grows)
+  var banked = 0; // score cashed out this run
+  var lastLostCombo = 0; // chain a death forfeited, so the recap can name what it cost
+  // Daily challenge: one date-seeded rule and one date-seeded map, identical
+  // for every player, all day. Opt-in from the menu; never persisted.
+  var dailyOn = false,
+    dailyDay = null,
+    dailyRule = null;
   var deathCell = null; // crash-highlight cell {x,y}
   var obstacles = []; // deadly blocks [{x,y}]
   var level = 1; // 1 + floor(foodsEaten / FOODS_PER_LEVEL)
@@ -91,8 +113,7 @@
     longest = 3; // run stats
   var squash = 0; // eat squash-and-stretch impulse 0..1
   var foodBornAt = 0,
-    bonusBornAt = 0,
-    shieldBornAt = 0; // spawn-pulse timestamps
+    shieldBornAt = 0; // spawn-pulse timestamps (bonuses carry their own per-orb)
   var seenTut = false; // first-run tutorial hint
   var tickMs = SPEED_PRESETS.normal;
   var acc = 0,
@@ -200,6 +221,9 @@
       bp2.textContent =
         state === 'paused' ? t('btn_resume') : state === 'menu' ? t('btn_play') : t('btn_again');
     if (typeof updateHUD === 'function') updateHUD();
+    // the daily row and the bank button carry the live chain / rule, so their
+    // labels cannot be static data-i18n text
+    if (typeof applyDailyLabels === 'function') applyDailyLabels();
     // re-render the visible card in the new language
     if (lastOvReplay && overlay && !overlay.classList.contains('hidden')) {
       try {
@@ -215,7 +239,16 @@
   // to zero with no way to tell that is what happened. Bump it and handle the
   // old shape deliberately rather than discovering it in someone's save file.
   var SAVE_VERSION = 1;
-  var life = { games: 0, foods: 0, bestCombo: 0, bestLevel: 1, wins: 0, prestige: 0, deathsBlocked: 0 };
+  var life = {
+    games: 0,
+    foods: 0,
+    bestCombo: 0,
+    bestLevel: 1,
+    wins: 0,
+    prestige: 0,
+    deathsBlocked: 0,
+    bestBank: 0,
+  };
   var ach = [];
   function loadLife() {
     try {
@@ -247,7 +280,16 @@
   function eraseProgress() {
     for (var i = 0; i < SAVE_KEYS.length; i++) store.remove(SAVE_KEYS[i]);
     best = 0;
-    life = { games: 0, foods: 0, bestCombo: 0, bestLevel: 1, wins: 0, prestige: 0, deathsBlocked: 0 };
+    life = {
+      games: 0,
+      foods: 0,
+      bestCombo: 0,
+      bestLevel: 1,
+      wins: 0,
+      prestige: 0,
+      deathsBlocked: 0,
+      bestBank: 0,
+    };
     ach = [];
     settingsRestored = {};
     if (typeof syncSkinOptions === 'function') syncSkinOptions();
@@ -279,6 +321,7 @@
     // `wins` has been persisted and incremented forever but was never shown
     // anywhere, so winning the board left no visible trace outside the run.
     if (life.wins > 0) s += ' • 🏆 ' + life.wins;
+    if (life.bestBank > 0) s += ' • 🏦 ' + life.bestBank;
     if (life.prestige > 0) s += ' • ⭐+' + life.prestige * 10 + '%';
     return s;
   }
@@ -395,7 +438,13 @@
     var pc = $('pill-combo');
     if (pc) {
       pc.hidden = combo < 2 || mini;
-      if (combo >= 2) setText($('combo'), 'x' + Math.min(combo, 5));
+      if (combo >= 2) {
+        // uncapped now: the ladder is the point, so the HUD must not imply a
+        // ceiling the scoring no longer has
+        setText($('combo'), 'x' + combo);
+        pc.classList.toggle('hot', combo >= COMBO_HOT);
+        setAttr(pc, 'title', t('tip_combo_hot', { n: combo }));
+      }
     }
     // shield charge stays visible mid-run: it is a life, not a stat
     var ps = $('pill-shield');
@@ -408,12 +457,44 @@
   function setAttr(el, k, v) {
     if (el && el.getAttribute(k) !== v) el.setAttribute(k, v);
   }
-  // Combo: eats chained within COMBO_WINDOW raise the multiplier (capped at x5)
+  // Combo: chained eats raise the multiplier, and the window to land the next
+  // one shrinks every step (SnakeLogic.comboWindow). A long chain is a bet.
   function registerEat() {
-    var r = SnakeLogic.comboFor(combo, lastEatAt, performance.now(), COMBO_WINDOW);
+    var now = performance.now();
+    var r = SnakeLogic.comboFor(combo, lastEatAt, now, COMBO_WINDOW);
     combo = r.combo;
-    lastEatAt = performance.now();
+    comboWindowMs = r.window;
+    lastEatAt = now;
     return r.mult;
+  }
+  // Streak bank: cash the live chain out for a guaranteed lump sum. The chain
+  // resets, so banking is a real choice - bank a smaller sure thing now, or
+  // keep riding a window that is closing. Dying with an un-banked chain
+  // forfeits it (see die()), which is what gives the pause button any weight.
+  function canBank() {
+    return combo >= BANK_MIN;
+  }
+  function bankNow() {
+    if (!canBank()) return false;
+    var v = SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult());
+    score += v;
+    banked += v;
+    if (v > (life.bestBank || 0)) life.bestBank = v;
+    if (combo > life.bestCombo) life.bestCombo = combo;
+    saveLife();
+    combo = 0;
+    lastEatAt = 0;
+    comboWindowMs = COMBO_WINDOW;
+    unlock('bank5');
+    updateHUD();
+    toast(t('bank_t', { n: v }));
+    say(t('bank_t', { n: v }));
+    beep(523, 1046, 0.22, 'sine');
+    buzz([25, 40, 25]);
+    // the bank row is worth 0 and must disappear, so whoever banked owns the
+    // re-render - not just the button handler
+    if (state === 'paused') replayPause();
+    return true;
   }
   // Screen-reader announcements. #toast is aria-hidden (visual only), so this
   // is the single source of spoken feedback: every user-visible event that
@@ -619,9 +700,10 @@
       foodMesh.material.color.setHex(p.food);
       foodMesh.material.emissive.setHex(p.foodEm);
     }
-    if (window.__bonusMesh) {
-      window.__bonusMesh.material.color.setHex(p.bonus);
-      window.__bonusMesh.material.emissive.setHex(p.bonusEm);
+    // all bonus orbs share one material, so one write repaints the pool
+    if (window.__bonusMeshes && window.__bonusMeshes.length) {
+      window.__bonusMeshes[0].material.color.setHex(p.bonus);
+      window.__bonusMeshes[0].material.emissive.setHex(p.bonusEm);
     }
     if (window.__trailMat) window.__trailMat.color.setHex(p.head);
     if (window.__headLight) window.__headLight.color.setHex(p.head);
@@ -702,6 +784,20 @@
     if (sp) sp.hidden = state !== 'menu';
     var pn = $('pause-note');
     if (pn) pn.hidden = state !== 'paused';
+    // Streak bank rides the pause card: it is the only moment mid-run where the
+    // player can think, which is exactly when the "ride it or take the money"
+    // decision is worth making. Hidden below BANK_MIN so it is never noise.
+    var bb = $('btn-bank');
+    if (bb) {
+      bb.hidden = !(state === 'paused' && canBank());
+      if (!bb.hidden)
+        setText(
+          bb,
+          t('bank_btn') +
+            '  ' +
+            t('bank_btn_val', { n: combo, v: SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult()) })
+        );
+    }
     if (state === 'menu' && b) {
       try {
         b.focus({ preventScroll: true });
@@ -743,6 +839,9 @@
       if (!/^https?:/.test(location.protocol)) return '';
       var u = location.origin + location.pathname + '?theme=' + LEVELS[startThemeIdx].name.toLowerCase();
       if (seedNum != null) u += '&seed=' + seedNum;
+      // a daily is only shareable if the recipient lands on the same day *and*
+      // the same rule, so pin the day rather than letting it default to today
+      if (dailyOn && dailyDay != null) u += '&daily=' + dailyDay;
       return u;
     } catch (e) {
       return '';
@@ -1153,6 +1252,31 @@
       ],
     }, // Ice: frozen lanes
   ];
+  // Maze layout, used when BOTH wrap walls and obstacles are on. It is not
+  // "wrap + obstacles" with the same four lonely stones: the biome bases above
+  // are scattered points, which is the right texture for an open arena but reads
+  // as noise in a wrapping board. This base is made of short *runs* of cells, so
+  // the 4-fold mirror builds barrier segments and the free space between them
+  // becomes corridors. Placed away from the spawn column (x>=4 keeps every
+  // mirrored orbit at Manhattan >= 4 from the head at 9,10) so the opening
+  // board is always survivable, and deliberately overlapping the biome bases
+  // never happens because maze replaces them rather than adding to them.
+  var MAZE_LAYOUT = {
+    base: [
+      [4, 2],
+      [5, 2],
+      [6, 2],
+      [8, 2],
+      [2, 4],
+      [2, 5],
+      [2, 6],
+      [2, 8],
+      [6, 4],
+      [6, 6],
+      [8, 8],
+    ],
+  };
+
   // Per-biome food tints (3D mesh + light + 2D fallback share the table).
   var FOOD_TINT = [
     { c: 0xffc94d, e: 0xcc6a00, css: '#ffc94d' }, // Meadow: honey orb
@@ -1267,7 +1391,135 @@
     }
     return L;
   }
-  // Run mode picker (start card) <-> settings checkboxes, kept in sync
+  // ---------- Daily challenge ----------
+  // A "daily" is one date -> one seed + one rule, identical for every player for
+  // the whole day. It reuses the seeded-run machinery (?seed=) rather than
+  // inventing a second RNG, so a daily is reproducible from its link and a
+  // friend can be beaten at exactly the same map. Every rule is expressed in
+  // terms of systems the game already has (modes, speed, orb cadence), so a
+  // daily adds no new physics - which is why this is cheap enough to ship and
+  // cheap enough to extend with another row.
+  var DAILY_RULES = [
+    {
+      id: 'maze',
+      wrap: true,
+      obstacles: true,
+      speed: 'normal',
+      bonusEvery: 5,
+      shieldEvery: 7,
+      shieldOff: false,
+    },
+    {
+      id: 'gauntlet',
+      wrap: false,
+      obstacles: true,
+      speed: 'normal',
+      bonusEvery: 5,
+      shieldEvery: 7,
+      shieldOff: false,
+    },
+    {
+      id: 'blitz',
+      wrap: true,
+      obstacles: false,
+      speed: 'fast',
+      bonusEvery: 5,
+      shieldEvery: 7,
+      shieldOff: false,
+    },
+    {
+      id: 'bounty',
+      wrap: true,
+      obstacles: false,
+      speed: 'normal',
+      bonusEvery: 3,
+      shieldEvery: 9,
+      shieldOff: false,
+    },
+    {
+      id: 'noshield',
+      wrap: true,
+      obstacles: true,
+      speed: 'normal',
+      bonusEvery: 4,
+      shieldEvery: 99,
+      shieldOff: true,
+    },
+  ];
+  // Days since the Unix epoch, in whole days, so every timezone agrees on when
+  // the daily rolls over.
+  function todayIndex() {
+    return Math.floor(Date.now() / 86400000);
+  }
+  function ruleForDay(day) {
+    return DAILY_RULES[SnakeLogic.dailySeed(day) % DAILY_RULES.length];
+  }
+  function dailyRuleName() {
+    return t('daily_rule_' + dailyRule.id);
+  }
+  // Apply (or release) the daily. While it is on, the settings that define the
+  // challenge are visibly disabled rather than silently ignored - a control that
+  // looks live but is not was the exact bug behind the old "Buttons" toggle.
+  function applyDaily(on, day) {
+    dailyOn = !!on;
+    if (!dailyOn) {
+      dailyRule = null;
+      dailyDay = null;
+    } else {
+      dailyDay = day == null ? todayIndex() : day | 0;
+      dailyRule = ruleForDay(dailyDay);
+      seedNum = SnakeLogic.dailySeed(dailyDay);
+      seedGen = null;
+      $('opt-wrap').checked = !!dailyRule.wrap;
+      $('opt-obstacles').checked = !!dailyRule.obstacles;
+      $('opt-speed').value = dailyRule.speed;
+      saveSettings();
+    }
+    var locked = ['opt-wrap', 'opt-obstacles', 'opt-speed'];
+    for (var i = 0; i < locked.length; i++) {
+      var el = $(locked[i]);
+      if (el) el.disabled = dailyOn;
+    }
+    var segs = document.querySelectorAll('#mode-seg button');
+    for (var s = 0; s < segs.length; s++) segs[s].disabled = dailyOn;
+    applyDailyLabels();
+    syncModeSeg();
+  }
+  // Split out of applyDaily so a language switch can re-render the same labels
+  // without toggling the challenge off and on.
+  function applyDailyLabels() {
+    var db = $('btn-daily');
+    if (db) setText(db, dailyOn ? t('daily_exit') : t('daily_btn'));
+    var dn = $('daily-note');
+    if (dn) {
+      dn.hidden = !dailyOn;
+      if (dailyOn) dn.textContent = t('daily_t', { n: dailyRuleName() });
+    }
+  }
+
+  // ---------- Run modes ----------
+  // Maze used to be an accident: it was the two independent checkboxes both being
+  // on, which produced "wrap, plus a handful of rocks", i.e. classic obstacles
+  // with the exits removed. It is now one named mode with its own tuned layout
+  // and density, so the picker offers four real choices instead of three plus a
+  // footgun combination. Both checkboxes still exist and still drive
+  // everything - they are the source of truth - the picker just stops
+  // pretending the combination is meaningless.
+  function wrapOn() {
+    var el = $('opt-wrap');
+    return !!(el && el.checked);
+  }
+  function mazeOn() {
+    return wrapOn() && obstaclesOn();
+  }
+  // Maze opens already structured and keeps thickening; an arena keeps its
+  // lighter, sparser pacing.
+  function obstacleStart() {
+    return mazeOn() ? MAZE_OBSTACLE_START : OBSTACLE_START;
+  }
+  function obstaclePerLevel() {
+    return mazeOn() ? MAZE_OBSTACLE_PER_LEVEL : OBSTACLE_PER_LEVEL;
+  }
   function setMode(m) {
     if (m === 'wrap') {
       $('opt-wrap').checked = true;
@@ -1275,6 +1527,9 @@
     } else if (m === 'obstacles') {
       $('opt-obstacles').checked = true;
       $('opt-wrap').checked = false;
+    } else if (m === 'maze') {
+      $('opt-wrap').checked = true;
+      $('opt-obstacles').checked = true;
     } else {
       $('opt-wrap').checked = false;
       $('opt-obstacles').checked = false;
@@ -1284,7 +1539,9 @@
   }
   function syncModeSeg() {
     var m = 'classic';
-    if ($('opt-obstacles') && $('opt-obstacles').checked) m = 'obstacles';
+    // maze first: both boxes on must read as maze, not as "obstacles"
+    if (mazeOn()) m = 'maze';
+    else if ($('opt-obstacles') && $('opt-obstacles').checked) m = 'obstacles';
     else if ($('opt-wrap') && $('opt-wrap').checked) m = 'wrap';
     var btns = document.querySelectorAll('#mode-seg button');
     for (var i = 0; i < btns.length; i++)
@@ -1480,8 +1737,7 @@
     tickMs = baseInterval();
     acc = 0;
     squash = 0;
-    bonus = null;
-    bonusLeft = 0;
+    bonuses = [];
     hasShield = false;
     shieldPhase = 0;
     slideHeld = null;
@@ -1495,9 +1751,14 @@
     seedGen = null; // fresh deterministic stream for seeded runs
     combo = 0;
     lastEatAt = 0;
+    comboWindowMs = COMBO_WINDOW;
+    banked = 0;
+    lastLostCombo = 0;
+    lastBonusFood = 0;
+    lastShieldFood = 0;
     deathCell = null;
     obstacles = [];
-    hideBonusMesh();
+    clearBonuses();
     hideShieldMesh();
     if (window.__shieldRing) window.__shieldRing.visible = false;
     if (window.__emberRings)
@@ -1509,7 +1770,7 @@
     if (fl) fl.classList.remove('show');
     applyTheme(startThemeIdx);
     spawnFood();
-    if (obstaclesOn()) seedObstacles(OBSTACLE_START);
+    if (obstaclesOn()) seedObstacles(obstacleStart());
     syncSnakeMeshes(true);
     syncObstacleMeshes(true);
     updateHUD();
@@ -1523,7 +1784,7 @@
     var o = {};
     for (var i = 0; i < snake.length; i++) o[snake[i].x + snake[i].y * GRID] = true;
     o[food.x + food.y * GRID] = true;
-    if (bonus) o[bonus.x + bonus.y * GRID] = true;
+    for (var b = 0; b < bonuses.length; b++) o[bonuses[b].x + bonuses[b].y * GRID] = true;
     if (shield) o[shield.x + shield.y * GRID] = true;
     for (var e = 0; e < embers.length; e++) o[embers[e].x + embers[e].y * GRID] = true;
     for (var j = 0; j < obstacles.length; j++) o[obstacles[j].x + obstacles[j].y * GRID] = true;
@@ -1546,6 +1807,12 @@
     // one variant per run: pattern, transposed pattern, or classic scatter.
     // Chosen from the seeded stream, so links replay identical maps.
     var r = rng();
+    if (mazeOn()) {
+      // never scatter in a maze: random confetti instead of walls is exactly
+      // the "wrap + a few rocks" outcome maze mode exists to stop being
+      runLayout = { base: MAZE_LAYOUT.base, transpose: r < 0.4 };
+      return;
+    }
     var L = LAYOUTS[themeIdx] || LAYOUTS[0];
     if (r < 0.15) runLayout = { scatter: true };
     else runLayout = { base: L.base, transpose: r < 0.4 };
@@ -1670,7 +1937,7 @@
     }
     beep(523, 1046, 0.18, 'sine');
     announce(t('sr_level', { n: n, biome: biomeName(L.name) }));
-    if (obstaclesOn()) addObstacles(OBSTACLE_PER_LEVEL);
+    if (obstaclesOn()) addObstacles(obstaclePerLevel());
   }
   function spawnFood() {
     if (snake.length >= GRID * GRID) return false;
@@ -1744,7 +2011,13 @@
       return;
     }
     var willEat = nx === food.x && ny === food.y;
-    var willEatBonus = !!(bonus && nx === bonus.x && ny === bonus.y);
+    var eatBonusIdx = -1;
+    for (var bi = 0; bi < bonuses.length; bi++)
+      if (bonuses[bi].x === nx && bonuses[bi].y === ny) {
+        eatBonusIdx = bi;
+        break;
+      }
+    var willEatBonus = eatBonusIdx >= 0;
     var willEatShield = !!(shield && nx === shield.x && ny === shield.y);
     var willGrow = willEat || willEatBonus;
     var cell = { x: nx, y: ny };
@@ -1795,11 +2068,15 @@
       var tb = gridToWorld(nx, ny);
       burst({ x: tb.x, y: 0.7, z: tb.z }, 0xff5fa2, 16);
       beep(880, 1560, 0.16, 'square');
-      hideBonusMesh();
+      removeBonus(eatBonusIdx);
       say(t('bonus_ate', { n: gainedB }) + (multB > 1 ? ' (x' + multB + ')' : ''));
-      if (multB >= 5) showBanner(t('banner_combo'));
-      // the regular food is still on the board, so no spawnFood() here; the
-      // bonus/shield cadence re-checks on the next regular eat.
+      // Milestones, not "every eat past 5": the ladder has no ceiling now, so a
+      // `>= 5` test would fire the banner on every remaining food of the run.
+      if (multB >= 5 && multB % 5 === 0) showBanner(t('banner_combo', { n: multB }));
+      // The regular food is still on the board, so no spawnFood() here. But the
+      // pool just freed a slot, so re-check the cadence: collecting fast refills
+      // the board faster.
+      paceEntities();
       var nlB = SnakeLogic.levelFor(foodsEaten, FOODS_PER_LEVEL);
       if (nlB > level) levelUp(nlB);
       tickMs = tickForFoods(foodsEaten);
@@ -1823,7 +2100,9 @@
       fx2d(nx, ny, '+' + gained, curPal().css.food);
       hideTut();
       if (mult > 1) say(t('combo_t', { m: mult, n: gained }));
-      if (mult >= 5) showBanner(t('banner_combo'));
+      // every 5th step, not every eat past 5 - and `n` must be passed, or the
+      // banner renders a literal "x{n}" (the bonus path already did this right)
+      if (mult >= 5 && mult % 5 === 0) showBanner(t('banner_combo', { n: mult }));
       var nl = SnakeLogic.levelFor(foodsEaten, FOODS_PER_LEVEL);
       if (nl > level) levelUp(nl);
       var gt = gridToWorld(nx, ny);
@@ -1837,8 +2116,7 @@
         return;
       }
       spawnFood();
-      if (!bonus && foodsEaten % BONUS_EVERY === 0) spawnBonus();
-      if (!shield && !hasShield && foodsEaten % SHIELD_EVERY === 0) spawnShield();
+      paceEntities();
     } else if (willEatShield) {
       snake.pop(); // armor, not food: normal move, no growth
       hasShield = true;
@@ -1886,6 +2164,10 @@
         fl.classList.remove('show');
       }, 700);
     }
+    // An un-banked chain dies with the run. Captured before the reset so the
+    // recap can name what the crash actually cost - otherwise banking is just a
+    // bonus button with no downside and no reason to ever press it.
+    lastLostCombo = combo >= BANK_MIN ? combo : 0;
     combo = 0;
     var isBest = score > best && score > 0;
     var nb = Math.max(best, score);
@@ -1905,7 +2187,14 @@
         score: score,
         best: best,
       });
-      showOverlay(t('over_t'), recap + (isBest ? ' ' + t('newbest') : ''), statsChips(), replayOver);
+      showOverlay(
+        t('over_t'),
+        recap +
+          (isBest ? ' ' + t('newbest') : '') +
+          (lastLostCombo ? ' ' + t('bank_lost', { n: lastLostCombo }) : ''),
+        statsChips(),
+        replayOver
+      );
       primeShot(); // share picture ready by the time the card is read
     };
     setTimeout(function () {
@@ -1955,16 +2244,25 @@
     var h = $('hint');
     if (h) h.hidden = seenTut;
     announce(t('sr_start'));
+    // the daily is only fair if its rule is stated, not just applied: the
+    // controls are visibly disabled, so the twist needs saying out loud too
+    if (dailyOn) {
+      toast(t('daily_t', { n: dailyRuleName() }));
+      say(t('daily_t', { n: dailyRuleName() }));
+    }
     acc = Math.max(0, tickMs - 30); // RESPONSIVE: first step lands ~30ms after tap
     var b = $('btn-play');
     if (b) b.blur();
   }
+  // Shared by togglePause() and the bank button, so re-rendering the pause card
+  // (after banking, or after a language switch) always rebuilds the same thing
+  // - including the bank row, whose value depends on the live chain.
+  function replayPause() {
+    showOverlay(t('paused_t'), t('paused_s'), statsChips(), replayPause);
+  }
   function togglePause() {
     if (state === 'playing') {
       setState('paused');
-      var replayPause = function () {
-        showOverlay(t('paused_t'), t('paused_s'), statsChips(), replayPause);
-      };
       replayPause();
       announce(t('sr_pause'));
     } else if (state === 'paused') {
@@ -2144,6 +2442,15 @@
   });
   onTap($('btn-quit'), function () {
     if (state === 'paused') quitToMenu();
+  });
+  onTap($('btn-bank'), function () {
+    // stays paused on purpose: the pause card is the decision point, so the
+    // player banks and then decides again whether to resume or die for more
+    if (state === 'paused') bankNow();
+  });
+  onTap($('btn-daily'), function () {
+    sfx.click();
+    applyDaily(!dailyOn);
   });
   onTap($('btn-prestige'), doPrestige);
   onTap($('btn-share'), shareScore);
@@ -2862,21 +3169,31 @@
     foodBase.position.y = 0.03;
     scene.add(foodBase);
 
-    // bonus pickup: pink octahedron, hidden until spawned
-    window.__bonusMesh = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.44, 0),
-      new THREE.MeshStandardMaterial({
-        color: 0xff5fa2,
-        emissive: 0xa3124f,
-        emissiveIntensity: 1.2,
-        roughness: 0.25,
-      })
-    );
-    window.__bonusMesh.castShadow = true;
-    window.__bonusMesh.visible = false;
-    scene.add(window.__bonusMesh);
-    window.__bonusLight = new THREE.PointLight(0xff5fa2, 1.1, 8);
-    scene.add(window.__bonusLight);
+    // bonus pickups: a pool of pink octahedra, all hidden until spawned. One
+    // shared geometry + one shared material, so the extra orbs cost draw calls
+    // only (2-3 of them) and no extra geometry or shader permutations. Kept as
+    // separate meshes rather than an InstancedMesh because each orb pulses
+    // independently on its own TTL and the pool is small enough that it would
+    // not pay for itself.
+    var bonusGeo = new THREE.OctahedronGeometry(0.44, 0);
+    var bonusMat = new THREE.MeshStandardMaterial({
+      color: 0xff5fa2,
+      emissive: 0xa3124f,
+      emissiveIntensity: 1.2,
+      roughness: 0.25,
+    });
+    window.__bonusMeshes = [];
+    window.__bonusLights = [];
+    for (var bmi = 0; bmi < BONUS_MAX; bmi++) {
+      var bm = new THREE.Mesh(bonusGeo, bonusMat);
+      bm.castShadow = true;
+      bm.visible = false;
+      scene.add(bm);
+      window.__bonusMeshes.push(bm);
+      var bl = new THREE.PointLight(0xff5fa2, 0, 8);
+      scene.add(bl);
+      window.__bonusLights.push(bl);
+    }
     // shield pickup: cyan icosahedron, hidden until spawned
     window.__shieldMesh = new THREE.Mesh(
       new THREE.IcosahedronGeometry(0.42, 0),
@@ -3500,25 +3817,69 @@
       if (snap) obstacleMeshes[i].scale.setScalar(0.01);
     }
   }
-  // Bonus pickup: rare, timed, worth 50 x combo. Never on snake or regular food.
+  // Entity pacing. Both orbs used to spawn on `foodsEaten % N`, which is a
+  // calendar slot: it fires whether or not the moment is interesting, it cannot
+  // defer, and it told the player exactly when to expect a pickup. These are
+  // cooldowns instead - "not yet" rather than "not today" - and each defers
+  // rather than being skipped when its precondition is not met, so a held
+  // shield charge postpones the next orb instead of wasting its slot.
+  function bonusEvery() {
+    return dailyOn && dailyRule ? dailyRule.bonusEvery : BONUS_EVERY;
+  }
+  function shieldEvery() {
+    return dailyOn && dailyRule ? dailyRule.shieldEvery : SHIELD_EVERY;
+  }
+  function shieldsOff() {
+    return !!(dailyOn && dailyRule && dailyRule.shieldOff);
+  }
+  function bonusDue() {
+    if (bonuses.length >= Math.min(BONUS_MAX, bonusCap())) return false;
+    return foodsEaten - lastBonusFood >= bonusEvery();
+  }
+  function shieldDue() {
+    if (shieldsOff() || shield || hasShield) return false;
+    return foodsEaten - lastShieldFood >= shieldEvery();
+  }
+  function paceEntities() {
+    if (bonusDue()) spawnBonus();
+    if (shieldDue()) spawnShield();
+  }
+
+  // Bonus pickup: worth 50 x combo, worth grabbing several of late. Never on the
+  // snake, the regular food, or another orb.
+  function bonusAt(x, y) {
+    for (var i = 0; i < bonuses.length; i++) if (bonuses[i].x === x && bonuses[i].y === y) return i;
+    return -1;
+  }
+  // How many pink orbs may be in play at once. This is the difficulty curve the
+  // orbs were missing: one orb for the opening levels (so picking one up stays
+  // a real "do I detour?"), two once you know the game, three once the board is
+  // dangerous enough that detouring is the interesting part.
+  function bonusCap() {
+    return level >= 6 ? 3 : level >= 3 ? 2 : 1;
+  }
   function spawnBonus() {
-    if (bonus || snake.length >= GRID * GRID - 1) return false;
+    if (bonuses.length >= Math.min(BONUS_MAX, bonusCap()) || snake.length >= GRID * GRID - 1) return false;
     var c = SnakeLogic.findFree(occupiedMap(), GRID, rng, 200);
     if (!c) return false;
-    bonus = c;
-    bonusLeft = BONUS_TTL;
-    placeBonusMesh();
+    bonuses.push({ x: c.x, y: c.y, left: BONUS_TTL, bornAt: performance.now() });
+    lastBonusFood = foodsEaten; // cooldown, not a calendar slot
+    placeBonusMesh(bonuses.length - 1);
     say(t('bonus_spawn'));
     return true;
   }
-  function placeBonusMesh() {
-    bonusBornAt = performance.now();
-    if (mode !== '3d' || !window.__bonusMesh || !bonus) return;
-    var t = gridToWorld(bonus.x, bonus.y);
-    window.__bonusMesh.position.set(t.x, 0.7, t.z);
-    window.__bonusMesh.scale.setScalar(0.01);
-    window.__bonusMesh.visible = true;
-    if (window.__bonusLight) window.__bonusLight.position.set(t.x, 1.8, t.z);
+  function placeBonusMesh(i) {
+    var b = bonuses[i];
+    if (!b) return;
+    b.bornAt = performance.now();
+    var m = window.__bonusMeshes && window.__bonusMeshes[i];
+    if (mode !== '3d' || !m) return;
+    var t = gridToWorld(b.x, b.y);
+    m.position.set(t.x, 0.7, t.z);
+    m.scale.setScalar(0.01);
+    m.visible = true;
+    var l = window.__bonusLights && window.__bonusLights[i];
+    if (l) l.position.set(t.x, 1.8, t.z);
   }
   // spawn-pop easing (overshoots slightly, like a jelly pop)
   function easeOutBack(x) {
@@ -3526,10 +3887,27 @@
     var u = x - 1;
     return 1 + (c + 1) * u * u * u + c * u * u;
   }
-  function hideBonusMesh() {
-    bonus = null;
-    bonusLeft = 0;
-    if (window.__bonusMesh) window.__bonusMesh.visible = false;
+  // Remove one orb. Slots are reused rather than compacted, so a mesh index
+  // always maps to the same orb for its whole life - popping a bonus must not
+  // teleport the *other* orb's mesh.
+  function removeBonus(i) {
+    if (i < 0 || i >= bonuses.length) return;
+    bonuses.splice(i, 1);
+    var m = window.__bonusMeshes && window.__bonusMeshes[i];
+    if (m) m.visible = false;
+    var l = window.__bonusLights && window.__bonusLights[i];
+    if (l) l.intensity = 0;
+    // the orb that just took this slot inherits it
+    if (bonuses[i]) placeBonusMesh(i);
+  }
+  function clearBonuses() {
+    for (var i = 0; i < Math.max(bonuses.length, (window.__bonusMeshes || []).length); i++) {
+      var m = window.__bonusMeshes && window.__bonusMeshes[i];
+      if (m) m.visible = false;
+      var l = window.__bonusLights && window.__bonusLights[i];
+      if (l) l.intensity = 0;
+    }
+    bonuses = [];
   }
   // Which neighbouring cell could the head enter next tick without dying?
   // Mirrors the collision rules in step() exactly (including the tail vacating,
@@ -3553,8 +3931,7 @@
       for (oi = 0; oi < obstacles.length; oi++)
         if (obstacles[oi].x === np.x && obstacles[oi].y === np.y) break;
       if (oi < obstacles.length) continue;
-      var grows =
-        (food && food.x === np.x && food.y === np.y) || (bonus && bonus.x === np.x && bonus.y === np.y);
+      var grows = (food && food.x === np.x && food.y === np.y) || bonusAt(np.x, np.y) >= 0;
       if (SnakeLogic.hitsBody(np, snake, grows)) continue;
       var lit = false;
       for (var ei = 0; ei < embers.length; ei++) {
@@ -3578,6 +3955,7 @@
     shield = c;
     shieldLeft = SHIELD_TTL;
     shieldBornAt = performance.now();
+    lastShieldFood = foodsEaten; // cooldown, not a calendar slot
     placeShieldMesh();
     say(t('shield_spawn'));
     return true;
@@ -3790,17 +4168,18 @@
       ctx2d.arc(ox + (food.x + 0.5) * cell, oy + (food.y + 0.5) * cell, cell * 0.36, 0, 7);
       ctx2d.fill();
     }
-    if (bonus) {
-      var blink = bonusLeft > 2000 || Math.floor(performance.now() / 125) % 2 === 0;
+    for (var dbi = 0; dbi < bonuses.length; dbi++) {
+      var db = bonuses[dbi];
+      var blink = db.left > 2000 || Math.floor(performance.now() / 125) % 2 === 0;
       if (blink) {
         ctx2d.fillStyle = pal.bonus;
         ctx2d.beginPath();
-        ctx2d.arc(ox + (bonus.x + 0.5) * cell, oy + (bonus.y + 0.5) * cell, cell * 0.42, 0, 7);
+        ctx2d.arc(ox + (db.x + 0.5) * cell, oy + (db.y + 0.5) * cell, cell * 0.42, 0, 7);
         ctx2d.fill();
         ctx2d.strokeStyle = '#fff';
         ctx2d.lineWidth = 2;
         ctx2d.beginPath();
-        ctx2d.arc(ox + (bonus.x + 0.5) * cell, oy + (bonus.y + 0.5) * cell, cell * 0.42, 0, 7);
+        ctx2d.arc(ox + (db.x + 0.5) * cell, oy + (db.y + 0.5) * cell, cell * 0.42, 0, 7);
         ctx2d.stroke();
       }
     }
@@ -3969,9 +4348,11 @@
     }
 
     // bonus countdown runs on play time in both 3D and 2D modes
-    if (bonus && state === 'playing') {
-      bonusLeft -= dt * 1000;
-      if (bonusLeft <= 0) hideBonusMesh();
+    if (state === 'playing') {
+      for (var pbi = bonuses.length - 1; pbi >= 0; pbi--) {
+        bonuses[pbi].left -= dt * 1000;
+        if (bonuses[pbi].left <= 0) removeBonus(pbi);
+      }
     }
     if (shield && state === 'playing') {
       shieldLeft -= dt * 1000;
@@ -4113,16 +4494,21 @@
     if (foodBase) foodBase.visible = foodShown;
     if (window.__gridMat && !reducedMotion) window.__gridMat.opacity = 0.45 + 0.15 * Math.sin(t * 1.2);
     // bonus pickup motion (countdown handled above for both modes)
-    if (bonus && window.__bonusMesh) {
-      var bAge = (now - bonusBornAt) / 350;
+    for (var mbi = 0; mbi < bonuses.length && window.__bonusMeshes; mbi++) {
+      var mbm = window.__bonusMeshes[mbi];
+      if (!mbm) break;
+      var mb = bonuses[mbi];
+      var bAge = (now - mb.bornAt) / 350;
       var bPop = bAge >= 1 ? 1 : Math.max(0.01, easeOutBack(Math.max(0, bAge)));
+      var mbl = window.__bonusLights && window.__bonusLights[mbi];
       if (!reducedMotion) {
-        window.__bonusMesh.position.y = 0.7 + Math.sin(t * 4.2) * 0.14;
-        window.__bonusMesh.rotation.y = t * 2.4;
+        mbm.position.y = 0.7 + Math.sin(t * 4.2) * 0.14;
+        mbm.rotation.y = t * 2.4;
         var bs = (1 + Math.sin(t * 5) * 0.1) * bPop;
-        window.__bonusMesh.scale.set(bs, bs, bs);
-        window.__bonusMesh.visible = bonusLeft > 2000 || Math.floor(t * 8) % 2 === 0;
-      } else window.__bonusMesh.scale.setScalar(bPop);
+        mbm.scale.set(bs, bs, bs);
+        mbm.visible = mb.left > 2000 || Math.floor(t * 8) % 2 === 0;
+        if (mbl) mbl.intensity = mbm.visible ? 1.1 : 0;
+      } else mbm.scale.setScalar(bPop);
     }
     // crash marker pulse
     if (window.__deathRing && window.__deathRing.visible && !reducedMotion) {
@@ -4333,6 +4719,24 @@
   }
 
   // ---------- Test hooks (harmless in production; used by e2e) ----------
+  // ---------- Test hooks ----------
+  function setSnakeTest(arr) {
+    snake = arr.map(function (s) {
+      return { x: s.x, y: s.y };
+    });
+    syncSnakeMeshes(true);
+    updateHUD();
+  }
+  function setDirTest(x, y) {
+    dir = { x: x, y: y };
+    queue = [];
+    slideHeld = null;
+  }
+  function setFoodTest(x, y) {
+    food = { x: x, y: y };
+    foodBornAt = performance.now();
+    placeFoodMesh();
+  }
   window.__game = {
     get state() {
       return state;
@@ -4367,11 +4771,27 @@
     get tickMs() {
       return tickMs;
     },
+    // First live orb, kept for the existing single-orb tests; `bonuses` is the
+    // real state now that several can coexist.
     get bonus() {
-      return bonus ? { x: bonus.x, y: bonus.y } : null;
+      return bonuses.length ? { x: bonuses[0].x, y: bonuses[0].y } : null;
+    },
+    get bonuses() {
+      return bonuses.map(function (b) {
+        return { x: b.x, y: b.y, left: Math.round(b.left) };
+      });
+    },
+    get comboWindow() {
+      return Math.round(comboWindowMs);
+    },
+    get banked() {
+      return banked;
+    },
+    canBank: function () {
+      return canBank();
     },
     get bonusLeft() {
-      return bonusLeft;
+      return bonuses.length ? bonuses[0].left : 0;
     },
     get combo() {
       return combo;
@@ -4402,6 +4822,7 @@
         wins: life.wins || 0,
         prestige: life.prestige || 0,
         deathsBlocked: life.deathsBlocked || 0,
+        bestBank: life.bestBank || 0,
       };
     },
     get ach() {
@@ -4460,10 +4881,45 @@
       }
       return { minCheb: minCheb === Infinity ? -1 : Math.round(minCheb * 100) / 100, total: total };
     },
+    // Places one orb (replacing any live one) so the single-orb tests keep
+    // working against a pool-backed implementation.
     setBonus: function (x, y, ttl) {
-      bonus = { x: x, y: y };
-      bonusLeft = ttl || BONUS_TTL;
-      placeBonusMesh();
+      clearBonuses();
+      bonuses.push({ x: x, y: y, left: ttl || BONUS_TTL, bornAt: performance.now() });
+      placeBonusMesh(0);
+    },
+    // Force a specific pool size, bypassing bonusCap(), to test the multi-orb
+    // late game without having to eat 18 foods first.
+    setBonusCount: function (n) {
+      for (var i = 0; i < n; i++) {
+        if (!spawnBonus()) break;
+        if (bonuses[i]) bonuses[i].left = BONUS_TTL * 20; // keep them on the board
+      }
+      return bonuses.length;
+    },
+    pace: paceEntities,
+    get daily() {
+      return {
+        on: dailyOn,
+        day: dailyDay,
+        rule: dailyRule ? dailyRule.id : null,
+        seed: dailyOn ? seedNum : null,
+      };
+    },
+    dailyRuleName: dailyRuleName,
+    setDaily: applyDaily,
+    ruleForDay: ruleForDay,
+    setCombo: function (n) {
+      combo = n;
+      lastEatAt = performance.now();
+      updateHUD();
+    },
+    bank: function () {
+      return bankNow();
+    },
+    bankRowVisible: function () {
+      var bb = $('btn-bank');
+      return !!(bb && !bb.hidden);
     },
     get shield() {
       return shield ? { x: shield.x, y: shield.y } : null;
@@ -4531,7 +4987,29 @@
       return shotReadyFlag;
     },
     clearBonus: function () {
-      hideBonusMesh();
+      clearBonuses();
+    },
+    clearBonusAt: function (i) {
+      removeBonus(i);
+    },
+    // Drive N chained eats from a known snake position: reset to the spawn
+    // column facing right each time, so the snake can never reach a wall or
+    // itself and the only variable is the eat.
+    forceEats: function (n) {
+      for (var i = 0; i < n; i++) {
+        setSnakeTest([
+          { x: 9, y: 10 },
+          { x: 8, y: 10 },
+          { x: 7, y: 10 },
+        ]);
+        setDirTest(1, 0);
+        setFoodTest(10, 10);
+        step();
+      }
+      return foodsEaten;
+    },
+    resume: function () {
+      if (state === 'paused') togglePause();
     },
     spawnBonus: spawnBonus,
     start: startGame,
@@ -4539,9 +5017,7 @@
     reset: reset,
     step: step,
     setFood: function (x, y) {
-      food = { x: x, y: y };
-      foodBornAt = performance.now();
-      placeFoodMesh();
+      setFoodTest(x, y);
     },
     // test hook: age the current food past its desert TTL to force a wither
     witherFood: function () {
@@ -4583,14 +5059,14 @@
     forceLayout: function (kind) {
       if (kind === 'scatter') runLayout = { scatter: true };
       else {
-        var L = LAYOUTS[themeIdx] || LAYOUTS[0];
+        var L = mazeOn() ? MAZE_LAYOUT : LAYOUTS[themeIdx] || LAYOUTS[0];
         runLayout = { base: L.base, transpose: kind === 'transpose' };
       }
       // rebuild from EMPTY, never append: the run's own seed may have chosen
       // the scatter variant, whose obstacles are intentionally asymmetric, so
       // appending would make the forced variant's symmetry untestable
       obstacles = [];
-      addObstacles(OBSTACLE_START);
+      addObstacles(obstacleStart());
       return runLayout;
     },
     // test hooks: themed food tint + wall build heights
@@ -4609,16 +5085,10 @@
       }
     },
     setSnake: function (arr) {
-      snake = arr.map(function (s) {
-        return { x: s.x, y: s.y };
-      });
-      syncSnakeMeshes(true);
-      updateHUD();
+      setSnakeTest(arr);
     },
     setDir: function (x, y) {
-      dir = { x: x, y: y };
-      queue = [];
-      slideHeld = null;
+      setDirTest(x, y);
     },
     die: die,
     win: win,
@@ -4703,6 +5173,23 @@
         seedNum = n;
         seedGen = null;
       }
+    }
+    // ?daily joins today's challenge; ?daily=<day> pins a specific day so a
+    // shared daily link (and the test suite) can replay it exactly.
+    var d = q.match(/[?&]daily=([^&]*)/);
+    if (d) {
+      var day = todayIndex();
+      var raw = '';
+      try {
+        raw = decodeURIComponent(d[1] || '');
+      } catch (e) {
+        raw = '';
+      }
+      if (/^-?\d+$/.test(raw)) {
+        var want = parseInt(raw, 10);
+        if (isFinite(want)) day = want;
+      }
+      applyDaily(true, day);
     }
   }
 

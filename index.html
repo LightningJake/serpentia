@@ -160,7 +160,22 @@
                 >
                   Obstacles
                 </button>
+                <button type="button" data-mode="maze" data-i18n="mode_maze" data-i18n-title="tip_mode_maze">
+                  Maze
+                </button>
               </div>
+              <div class="set-items">
+                <button
+                  type="button"
+                  id="btn-daily"
+                  class="btn ghost"
+                  data-i18n="daily_btn"
+                  data-i18n-title="tip_daily"
+                >
+                  📅 Daily challenge
+                </button>
+              </div>
+              <p class="hint" id="daily-note" hidden></p>
             </div>
             <div class="set-group">
               <h4 data-i18n="sec_game">Game</h4>
@@ -277,6 +292,9 @@
             <button id="btn-play" class="btn primary">▶ Start game</button>
           </div>
           <div class="row" id="pause-menu" hidden>
+            <button id="btn-bank" class="btn bank" data-i18n="bank_btn" data-i18n-title="tip_bank" hidden>
+              🏦 Bank streak
+            </button>
             <button id="btn-resume" class="btn primary" data-i18n="btn_resume">▶ Resume</button>
             <button id="btn-restart2" class="btn" data-i18n="btn_restart">↻ Restart</button>
             <button id="btn-quit" class="btn ghost" data-i18n="btn_menu">Menu</button>
@@ -365,6 +383,10 @@
             <li data-i18n-html="h14">
               Unlock <b>snake skins</b> with achievements (see the Look &amp; feel settings). Links like
               <b>?theme=volcano&amp;seed=7</b> replay the same map and spawns.
+            </li>
+            <li data-i18n-html="h17">
+              📅 <b>Daily challenge</b>: the same map and the same twist for everyone, all day. Everyone gets
+              an identical seed — chase a friend's score.
             </li>
           </ul>
           <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">Got it</button>

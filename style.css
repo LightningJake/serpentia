@@ -154,6 +154,40 @@ body {
 .pill.combo b {
   color: #ff7fb5;
 }
+/* High-risk chain: the combo ladder has no ceiling, so once the shrinking window
+   gets genuinely tight the pill says so. Colour only - the number stays in the
+   element text so screen readers still read the multiplier. */
+.pill.combo.hot {
+  border-color: #ffb347;
+  color: #ffe2b0;
+  box-shadow: 0 0 10px rgba(255, 179, 71, 0.5);
+  animation: combo-hot 0.7s ease-in-out infinite alternate;
+}
+.pill.combo.hot b {
+  color: #ffb347;
+}
+@keyframes combo-hot {
+  from {
+    box-shadow: 0 0 8px rgba(255, 179, 71, 0.35);
+  }
+  to {
+    box-shadow: 0 0 16px rgba(255, 179, 71, 0.75);
+  }
+}
+/* reduced motion: the colour change still carries the signal, the pulse does not */
+@media (prefers-reduced-motion: reduce) {
+  .pill.combo.hot {
+    animation: none;
+  }
+}
+.btn.bank {
+  color: #ffe0a3;
+  border-color: #8a6320;
+  background: #2a1f08;
+}
+.btn.bank:hover {
+  background: #3d2d0c;
+}
 #pill-shield {
   border-color: rgba(70, 230, 255, 0.6);
   box-shadow: 0 0 10px rgba(70, 230, 255, 0.45);
@@ -226,6 +260,18 @@ body {
 }
 .btn.danger:hover {
   background: #3a1414;
+}
+/* Controls the daily challenge pins. They must read as locked rather than
+   broken - a greyed-out input with no explanation looks like a bug, so the
+   #daily-note line underneath is what actually communicates the state. */
+#settings-panel .set-items input:disabled,
+#settings-panel .set-items select:disabled,
+#mode-seg button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+#daily-note {
+  margin: 2px 0 0;
 }
 
 #settings-panel {

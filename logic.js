@@ -27,13 +27,48 @@
   function levelFor(foods, perLevel) {
     return 1 + Math.floor(foods / perLevel);
   }
-  // Chained eats within `win` ms raise combo (mult capped at 5).
+  // ---------- Combo risk ladder ----------
+  // The multiplier used to be pinned at x5 (`Math.min(c, 5)`), so a chain past
+  // five was a dead plateau: the 6th chained food scored exactly what the 5th
+  // did, and the reward curve stopped responding to skill for the rest of the
+  // run. It is now a ladder - the multiplier keeps climbing, and the window you
+  // have to land the NEXT eat inside shrinks every step. A long chain is
+  // therefore a bet rather than a free plateau: the greedier you get, the less
+  // time you have to keep what you already earned.
+  var COMBO_STEP = 0.86; // window factor per combo step
+  var COMBO_MIN_WINDOW = 1100; // never squeezes below this (ms)
+  // Window still open for the current step. Uses the combo held *before* the
+  // eat, so the value that judged the last gap is the same one the player saw.
+  function comboWindow(base, combo) {
+    if (!combo || combo < 1) return base;
+    // rounded to whole ms: the value is surfaced in the HUD and compared in
+    // tests, and a float window is never what anyone wants to read
+    return Math.max(COMBO_MIN_WINDOW, Math.round(base * Math.pow(COMBO_STEP, combo - 1)));
+  }
+  // Chained eats raise the combo; `window` is the next step's allowance, which
+  // the caller can surface so the shrinking risk is visible rather than secret.
   function comboFor(combo, lastAt, now, win) {
-    var c = now - lastAt <= win ? combo + 1 : 1;
-    return { combo: c, mult: Math.min(c, 5) };
+    var c = now - lastAt <= comboWindow(win, combo) ? combo + 1 : 1;
+    return { combo: c, mult: c, window: comboWindow(win, c) };
   }
   function scoreGain(base, mult) {
     return base * mult;
+  }
+  // Streak bank: convert a live chain into a guaranteed lump sum. Quadratic on
+  // purpose - holding for a bigger chain always pays strictly more than banking
+  // early, but so does the per-food value of simply keeping eating, so "bank
+  // now" is always the safe-and-worse option. That gap is the whole decision.
+  function bankValue(combo, unit, mult) {
+    if (!combo || combo < 1) return 0;
+    unit = unit == null ? 5 : unit;
+    mult = mult == null ? 1 : mult;
+    return Math.round(unit * combo * combo * mult);
+  }
+  // Daily challenge seed: same day -> same seed -> same map and same rule for
+  // everyone. Days since the Unix epoch, hashed with Knuth's multiplicative
+  // constant so consecutive days land far apart in the mulberry32 stream.
+  function dailySeed(day) {
+    return (Math.imul(day | 0, 2654435761) >>> 0) % 100000;
   }
   // Snap a screen/world desire vector to the nearest of 4 grid dirs.
   // Ties drop the suicide (opposite-of-heading) candidate first (len > 1),
@@ -140,6 +175,9 @@
     hitsBody: hitsBody,
     levelFor: levelFor,
     comboFor: comboFor,
+    comboWindow: comboWindow,
+    bankValue: bankValue,
+    dailySeed: dailySeed,
     scoreGain: scoreGain,
     snapDir: snapDir,
     findFree: findFree,

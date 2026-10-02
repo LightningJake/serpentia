@@ -36,10 +36,33 @@ eq(L.hitsBody({ x: 0, y: 0 }, body, false), false, 'empty cell free');
 eq(L.levelFor(0, 6), 1, 'level starts at 1');
 eq(L.levelFor(5, 6), 1, 'level 1 until goal');
 eq(L.levelFor(6, 6), 2, 'level 2 at goal');
-eq(L.comboFor(0, 0, 1000, 5000), { combo: 1, mult: 1 }, 'first eat combo x1');
-eq(L.comboFor(1, 1000, 3000, 5000), { combo: 2, mult: 2 }, 'chained eat combo x2');
-eq(L.comboFor(2, 1000, 9000, 5000), { combo: 1, mult: 1 }, 'stale chain resets');
-eq(L.comboFor(7, 1000, 2000, 5000), { combo: 8, mult: 5 }, 'mult capped at x5');
+eq(L.comboFor(0, 0, 1000, 5000), { combo: 1, mult: 1, window: 5000 }, 'first eat combo x1');
+eq(L.comboFor(1, 1000, 3000, 5000), { combo: 2, mult: 2, window: 4300 }, 'chained eat combo x2');
+eq(L.comboFor(2, 1000, 9000, 5000), { combo: 1, mult: 1, window: 5000 }, 'stale chain resets');
+// ladder, not a plateau: the old cap pinned this at x5
+eq(L.comboFor(7, 1000, 2000, 5000), { combo: 8, mult: 8, window: 1740 }, 'mult keeps climbing past x5');
+// the risk side of the ladder: the window tightens every step and never inverts
+eq(L.comboWindow(5000, 1), 5000, 'step 1 window is the full base');
+eq(L.comboWindow(5000, 2), 4300, 'window shrinks one step');
+eq(L.comboWindow(5000, 2) < L.comboWindow(5000, 1), true, 'window strictly decreases');
+eq(L.comboWindow(5000, 12), 1100, 'window bottoms out, never below the floor');
+eq(L.comboWindow(5000, 40), 1100, 'floor holds at absurd combos');
+// a chain held just inside the shrinking window still counts...
+eq(L.comboFor(7, 1000, 2700, 5000).combo, 8, 'inside the tight window chains');
+// ...and one past it does not
+eq(L.comboFor(7, 1000, 3100, 5000).combo, 1, 'past the tight window resets');
+// bank: quadratic, strictly increasing, and worthless below 1
+eq(L.bankValue(0, 5, 1), 0, 'no chain, no bank');
+eq(L.bankValue(5, 5, 1), 125, 'bank x5');
+eq(L.bankValue(6, 5, 1), 180, 'bank x6');
+eq(L.bankValue(10, 5, 1), 500, 'bank x10');
+eq(L.bankValue(5, 5, 2), 250, 'prestige doubles the bank');
+eq(L.bankValue(9, 5, 1) < L.bankValue(10, 5, 1), true, 'banking later always pays more');
+// daily: same day -> same seed, different days -> different seeds
+eq(L.dailySeed(20000) === L.dailySeed(20000), true, 'daily seed is deterministic');
+eq(L.dailySeed(20000) === L.dailySeed(20001), false, 'consecutive days differ');
+eq(L.dailySeed(0) >= 0 && L.dailySeed(0) < 100000, true, 'daily seed in range');
+eq(L.dailySeed(-5) >= 0 && L.dailySeed(-5) < 100000, true, 'negative day still in range');
 eq(L.scoreGain(10, 3), 30, 'regular scoring');
 eq(L.scoreGain(50, 2), 100, 'bonus scoring');
 

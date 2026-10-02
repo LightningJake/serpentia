@@ -146,12 +146,22 @@ async function newPage(browser, blockCDN) {
       timeout: 5000,
     });
 
-    // Restart via real trusted click
+    // Restart via real trusted click.
+    // No sleep before reading the score: this test used to wait 200ms and then
+    // assert score === 0, which is a coin flip - reset() respawns food at a
+    // random cell, so if it happened to land next to the head the snake ate
+    // before the assertion and the check failed for no real reason. The click
+    // handler resets the score synchronously, so reading immediately is both
+    // deterministic and the stronger test.
+    await page.evaluate(() => window.__game.forceEats(3));
+    const scoreBeforeRestart = await g(page, 'score');
     await page.locator('#btn-restart').click();
-    await page.waitForTimeout(200);
+    const afterRestart = await g(page, 'state');
+    const scoreAfterRestart = await g(page, 'score');
     check(
       'btn-restart: real click restarts to playing/score 0',
-      (await g(page, 'state')) === 'playing' && (await g(page, 'score')) === 0
+      afterRestart === 'playing' && scoreAfterRestart === 0 && scoreBeforeRestart > 0,
+      'before=' + scoreBeforeRestart + ' after=' + scoreAfterRestart + ' state=' + afterRestart
     );
 
     // Pause / resume via buttons
@@ -455,17 +465,32 @@ async function newPage(browser, blockCDN) {
       (await g(page, 'state')) === 'playing' && (await g(page, 'score')) === 0
     );
 
-    // Wrap mode survives walls
+    // Wrap mode survives walls.
+    // Driven by explicit step() calls rather than a wall-clock wait: the old
+    // version slept 600ms and asserted an exact cell, so its result depended on
+    // how many ticks the browser managed to fit in that window (plus IPC
+    // overhead). Stepping makes "it wrapped" the only thing under test.
     await page.evaluate(() => {
       window.__game.start();
       document.getElementById('opt-wrap').checked = true;
       window.__game.setSnake([{ x: 19, y: 5 }]);
       window.__game.setDir(1, 0);
     });
-    await page.waitForTimeout(600);
-    const wst = await g(page, 'state'),
-      wsn = await page.evaluate(() => window.__game.snake[0].x);
-    check('wrap walls: survives + wraps to left side', wst === 'playing' && wsn <= 6, wst + ' x=' + wsn);
+    const wpos = await page.evaluate(() => {
+      const g2 = window.__game;
+      const seen = [];
+      for (let i = 0; i < 4; i++) {
+        g2.step();
+        seen.push(g2.snake[0].x);
+      }
+      return seen;
+    });
+    const wst = await g(page, 'state');
+    check(
+      'wrap walls: survives + wraps to left side',
+      wst === 'playing' && wpos[0] === 0 && wpos[3] === 3,
+      wst + ' ' + wpos.join(',')
+    );
     await page.evaluate(() => {
       document.getElementById('opt-wrap').checked = false;
     });
@@ -1094,8 +1119,18 @@ async function newPage(browser, blockCDN) {
 
     // Pause menu: Resume / Restart / Menu
     await page.evaluate(() => {
+      window.__scoreProbe = 0;
       window.__game.start();
       document.getElementById('opt-wrap').checked = true; // survive this long block unattended
+      window.__game.pause();
+      // A known non-zero score. The old version of this test left the snake
+      // running unattended for ~1s and asserted score === 0 after Restart, which
+      // only held when the snake happened not to stumble onto food in that
+      // window - a coin-flip flake, and a weak test even when it passed: it
+      // never proved Restart cleared anything.
+      window.__game.forceEats(3);
+      window.__scoreProbe = window.__game.score;
+      window.__game.resume();
     });
     await page.locator('#btn-pause').click();
     await page.waitForTimeout(200);
@@ -1126,11 +1161,13 @@ async function newPage(browser, blockCDN) {
     await page.waitForTimeout(200);
     await page.locator('#btn-pause').click();
     await page.waitForTimeout(200);
+    const probeBefore = await page.evaluate(() => window.__scoreProbe);
     await page.locator('#btn-restart2').click();
     await page.waitForTimeout(200);
     check(
       'pause menu: Restart resets',
-      (await g(page, 'state')) === 'playing' && (await g(page, 'score')) === 0
+      (await g(page, 'state')) === 'playing' && (await g(page, 'score')) === 0 && probeBefore > 0,
+      'before=' + probeBefore + ' after=' + (await g(page, 'score'))
     );
     await page.locator('#btn-pause').click();
     await page.waitForTimeout(200);
@@ -1940,6 +1977,314 @@ async function newPage(browser, blockCDN) {
 
     check('no page errors in 3D session', errors.length === 0, errors.slice(0, 2).join(' | '));
     await page.close();
+
+    // ---------- combo ladder / bank / maze / orb pacing / daily ----------
+    // A fresh page so the ladder assertions cannot be perturbed by the combo
+    // state left behind by the scoring group above.
+    const rL = await newPage(browser, false);
+    const pL = rL.page;
+    {
+      // --- 2: the ladder replaces the x5 plateau ---
+      const ladder = await pL.evaluate(() => {
+        const S = window.SnakeLogic;
+        // comboFor(m-1, gap) chains once and lands on exactly m
+        return [1, 5, 8, 12].map((m) => S.comboFor(m - 1, 1000, 1001, 5000).mult);
+      });
+      check('ladder: multiplier keeps climbing past x5', ladder.join(',') === '1,5,8,12', ladder.join(','));
+      const win = await pL.evaluate(() => {
+        const S = window.SnakeLogic;
+        return [1, 2, 4, 8, 12, 20].map((c) => S.comboWindow(5000, c));
+      });
+      // strictly tighter while it can be, then pinned at the floor - never
+      // growing back, which is what would make the "risk" a lie
+      check(
+        'ladder: window tightens every step then floors out',
+        win[0] === 5000 &&
+          win[1] < win[0] &&
+          win[2] < win[1] &&
+          win[3] < win[2] &&
+          win[4] <= win[3] &&
+          win[4] === 1100 &&
+          win[5] === 1100,
+        win.join(',')
+      );
+      // The HUD must not imply a ceiling the scoring no longer has.
+      await pL.evaluate(() => {
+        window.__game.start();
+        window.__game.setCombo(9);
+      });
+      await pL.waitForTimeout(120);
+      const pillTxt = await pL.locator('#combo').textContent();
+      const pillHot = await pL.locator('#pill-combo').getAttribute('class');
+      check(
+        'ladder: HUD shows uncapped multiplier and flags a hot chain',
+        pillTxt.trim() === 'x9' && /hot/.test(pillHot || ''),
+        pillTxt + ' / ' + pillHot
+      );
+      // The combo banner interpolates {n}. A call site that forgot to pass it
+      // rendered a literal "x{n}" on screen and no assertion caught it, so pin
+      // every user-facing string we build from a chain.
+      const bannerTxt = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.start();
+        g2.pause();
+        g2.forceEats(5); // lands the chain exactly on the 5th milestone
+        return document.getElementById('banner').textContent;
+      });
+      check(
+        'ladder: combo banner interpolates the step (no literal {n})',
+        /x5/.test(bannerTxt || '') && !/{/.test(bannerTxt || ''),
+        bannerTxt
+      );
+      const bankToast = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.resume();
+        g2.pause();
+        g2.setCombo(6);
+        g2.bank();
+        return document.getElementById('toast').textContent;
+      });
+      check(
+        'ladder: bank toast interpolates the amount (no literal {n})',
+        /180/.test(bankToast || '') && !/{/.test(bankToast || ''),
+        bankToast
+      );
+
+      // --- 4: the streak bank ---
+      await pL.evaluate(() => window.__game.setCombo(2));
+      const bankOff = await pL.evaluate(() => {
+        const before = window.__game.score;
+        return { row: window.__game.bankRowVisible(), gained: window.__game.bank(), before };
+      });
+      check('bank: nothing to bank below the threshold', bankOff.row === false && bankOff.gained === false);
+      await pL.evaluate(() => window.__game.setCombo(6));
+      // resume first: the previous block left the game paused, and pause() on a
+      // paused game *resumes* it, which would hide the card we are asserting on
+      await pL.evaluate(() => {
+        window.__game.resume();
+        window.__game.setCombo(6);
+        window.__game.pause();
+      });
+      await pL.waitForTimeout(150);
+      check('bank: row offered on the pause card', await pL.evaluate(() => window.__game.bankRowVisible()));
+      const bankLabel = (await pL.locator('#btn-bank').textContent()).trim();
+      const banked = await pL.evaluate(() => {
+        const before = window.__game.score;
+        const ok = window.__game.bank();
+        return { ok, gained: window.__game.score - before, combo: window.__game.combo };
+      });
+      check(
+        'bank: pays 5 x combo^2 and clears the chain',
+        banked.ok && banked.gained === 180 && banked.combo === 0,
+        'x6 -> ' + banked.gained + ', label="' + bankLabel + '"'
+      );
+      check('bank: row hides again once banked', await pL.evaluate(() => !window.__game.bankRowVisible()));
+      // an un-banked chain must die with the run, and the recap has to say so.
+      // Fully deterministic: classic mode, no orbs, food parked off the path -
+      // otherwise a stray bonus sitting on the walk line gets eaten first, which
+      // bumps the chain and changes the number the recap reports.
+      await pL.evaluate(() => {
+        window.__game.resume(); // paused -> playing
+        document.getElementById('opt-wrap').checked = false;
+        document.getElementById('opt-obstacles').checked = false;
+        window.__game.clearBonus();
+        window.__game.reset();
+        window.__game.setCombo(7);
+        window.__game.setDir(-1, 0);
+        window.__game.setSnake([
+          { x: 9, y: 10 },
+          { x: 10, y: 10 },
+          { x: 11, y: 10 },
+          { x: 11, y: 11 },
+        ]);
+        window.__game.setFood(0, 0);
+      });
+      // wait for the recap card itself, not just the state flip: the overlay is
+      // deliberately delayed ~1s behind the crash
+      await pL
+        .waitForFunction(() => /\u00d77/.test(document.getElementById('ov-sub').textContent || ''), null, {
+          timeout: 8000,
+        })
+        .catch(() => {});
+      const lostTxt = await pL.locator('#ov-sub').textContent();
+      check(
+        'bank: crash forfeits an un-banked chain and the recap names it',
+        (await g(pL, 'state')) === 'over' && /\u00d77/.test(lostTxt || ''),
+        (lostTxt || '').slice(0, 70)
+      );
+
+      // --- 3: orb pacing ---
+      const caps = await pL.evaluate(() => {
+        const out = [];
+        for (const lv of [1, 3, 6]) {
+          window.__game.start();
+          window.__game.pause();
+          window.__game.clearBonus();
+          if (lv > 1) window.__game.forceEats((lv - 1) * 6 + 2);
+          window.__game.clearBonus();
+          window.__game.setBonusCount(3);
+          out.push({ lv: window.__game.level, n: window.__game.bonuses.length });
+        }
+        return out;
+      });
+      check(
+        'orbs: concurrent cap climbs 1 -> 2 -> 3 with level',
+        caps.length === 3 && caps[0].n === 1 && caps[1].n === 2 && caps[2].n === 3,
+        JSON.stringify(caps)
+      );
+      // removing one orb must not disturb the others
+      const pool = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.start();
+        g2.pause();
+        g2.clearBonus();
+        g2.forceEats(32);
+        g2.clearBonus();
+        g2.setBonusCount(3);
+        const before = g2.bonuses;
+        const mid = before[1];
+        g2.clearBonusAt(0);
+        const after = g2.bonuses;
+        return {
+          before: before.length,
+          after: after.length,
+          stillThere: after.some((b) => b.x === mid.x && b.y === mid.y),
+        };
+      });
+      check(
+        'orbs: eating one leaves the rest in place',
+        pool.before === 3 && pool.after === 2 && pool.stillThere,
+        JSON.stringify(pool)
+      );
+
+      // --- 5: maze is its own mode ---
+      // the mode picker lives in the settings panel, which is menu-only
+      await toMenu(pL);
+      await pL.evaluate(() => {
+        document.getElementById('opt-wrap').checked = false;
+        document.getElementById('opt-obstacles').checked = false;
+        window.__game.reset();
+      });
+      const arena = await g(pL, 'obstacles.length');
+      await pL.locator('#mode-seg button[data-mode="maze"]').click();
+      await pL.waitForTimeout(80);
+      const mazeChecks = await pL.evaluate(() => ({
+        wrap: document.getElementById('opt-wrap').checked,
+        ob: document.getElementById('opt-obstacles').checked,
+        sel: document.querySelector('#mode-seg button[data-mode="maze"]').getAttribute('aria-checked'),
+        n: window.__game.obstacles.length,
+      }));
+      await pL.evaluate(() => window.__game.reset());
+      const mazeN = (await g(pL, 'obstacles.length')) || 0;
+      check(
+        'maze: picker turns it into one coherent mode',
+        mazeChecks.wrap && mazeChecks.ob && mazeChecks.sel === 'true',
+        JSON.stringify(mazeChecks)
+      );
+      check(
+        'maze: opens with corridor density, not four stones',
+        mazeN > arena && mazeN >= 8,
+        'arena=' + arena + ' maze=' + mazeN
+      );
+      // maze maps stay mirror-symmetric, the property the layouts are built on
+      const sym = await pL.evaluate(() => {
+        const obs = window.__game.obstacles;
+        const has = (x, y) => obs.some((o) => o.x === x && o.y === y);
+        return obs.every((o) => has(o.x, 19 - o.y) && has(19 - o.x, o.y) && has(19 - o.x, 19 - o.y));
+      });
+      check('maze: layout keeps the 4-fold mirror symmetry', sym);
+      // and neither of the three solo modes may be mistaken for maze
+      for (const solo of ['wrap', 'obstacles', 'classic']) {
+        await pL.locator('#mode-seg button[data-mode="' + solo + '"]').click();
+        await pL.waitForTimeout(50);
+        const sel = await pL.evaluate(
+          (s) =>
+            document.querySelector('#mode-seg button[data-mode="' + s + '"]').getAttribute('aria-checked'),
+          solo
+        );
+        if (sel !== 'true') {
+          check('maze: solo mode ' + solo + ' not reported as maze', false, sel);
+          break;
+        }
+        if (solo === 'classic') check('maze: classic/wrap/obstacles never alias to maze', true);
+      }
+
+      // --- 6: daily challenge ---
+      await toMenu(pL);
+      const daily = await pL.evaluate(() => {
+        window.__game.setDaily(true, 20000);
+        return window.__game.daily;
+      });
+      check(
+        'daily: a day resolves to a rule and a seed',
+        daily.on === true && daily.day === 20000 && !!daily.rule && daily.seed >= 0,
+        JSON.stringify(daily)
+      );
+      const same = await pL.evaluate(() => {
+        window.__game.setDaily(true, 20000);
+        const a = window.__game.daily;
+        window.__game.setDaily(false);
+        window.__game.setDaily(true, 20000);
+        return a.rule === window.__game.daily.rule && a.seed === window.__game.daily.seed;
+      });
+      check('daily: same day replays identically', same);
+      const locked = await pL.evaluate(() => ({
+        wrap: document.getElementById('opt-wrap').disabled,
+        spd: document.getElementById('opt-speed').disabled,
+        seg: document.querySelector('#mode-seg button[data-mode="maze"]').disabled,
+        note: !document.getElementById('daily-note').hidden,
+        noteText: document.getElementById('daily-note').textContent,
+        btn: document.getElementById('btn-daily').textContent.trim(),
+      }));
+      check(
+        'daily: the settings it pins are visibly locked, with the rule stated',
+        locked.wrap && locked.spd && locked.seg && locked.note && locked.noteText.length > 5,
+        JSON.stringify(locked)
+      );
+      await pL.evaluate(() => {
+        window.__game.setDaily(false);
+        document.getElementById('opt-wrap').checked = false;
+        document.getElementById('opt-obstacles').checked = false;
+      });
+      const freed = await pL.evaluate(() => ({
+        wrap: document.getElementById('opt-wrap').disabled,
+        note: document.getElementById('daily-note').hidden,
+      }));
+      check('daily: leaving it unlocks everything again', !freed.wrap && freed.note);
+
+      // every rule must be reachable, and each must actually differ
+      const rules = await pL.evaluate(() => {
+        const out = [];
+        for (let d = 19900; d < 19960; d++) {
+          window.__game.setDaily(true, d);
+          out.push(window.__game.daily.rule);
+        }
+        window.__game.setDaily(false);
+        return Array.from(new Set(out));
+      });
+      check(
+        'daily: the whole rule table is reachable across 60 days',
+        rules.length >= 5,
+        rules.length + ' distinct: ' + rules.join(',')
+      );
+
+      // a shared daily link must land on the same rule
+      const linkPage = await newPage(browser, false);
+      await linkPage.page.goto('http://127.0.0.1:' + PORT + '/index.html?daily=20000', {
+        waitUntil: 'load',
+      });
+      await linkPage.page.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+      const viaLink = await g(linkPage.page, 'daily');
+      check(
+        'daily: ?daily=<day> deep link replays the same rule',
+        viaLink.on === true && viaLink.day === 20000 && viaLink.rule === daily.rule,
+        JSON.stringify(viaLink)
+      );
+      await linkPage.page.close();
+
+      check('no page errors in ladder session', rL.errors.length === 0, rL.errors.slice(0, 2).join(' | '));
+    }
+    await pL.close();
 
     // ---------- 2D fallback context (CDN blocked) ----------
     const r2 = await newPage(browser, true);
