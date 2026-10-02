@@ -137,6 +137,53 @@ const g = (page, expr) => page.evaluate(new Function('return window.__game.' + e
     const dq = await page.evaluate(() => window.__game.queue);
     check('m-dpad: left queues turn', dq.length > 0 && dq[dq.length - 1].y === -1, JSON.stringify(dq));
 
+    // The legibility floor zooms the camera in on a phone, which shows the wall
+    // outline as an SVG overlay above the canvas. It must stay
+    // pointer-transparent, or it would silently eat swipes and taps.
+    const guide = await page.evaluate(() => {
+      const g = window.__game;
+      g.setSnake([
+        { x: 10, y: 10 },
+        { x: 9, y: 10 },
+      ]);
+      g.setDir(1, 0);
+      return {
+        following: g.fitFollowing,
+        visible: g.edgeGuideVisible(),
+        pointerEvents: getComputedStyle(document.getElementById('edge-guide')).pointerEvents,
+        // visibility must be the content attribute, not el.hidden: SVGElement
+        // has no hidden IDL property, so el.hidden silently reads undefined
+        hiddenAttr: document.getElementById('edge-guide').hasAttribute('hidden'),
+        display: getComputedStyle(document.getElementById('edge-guide')).display,
+      };
+    });
+    check(
+      'm-guide: shown on a phone and actually rendered',
+      guide.following && guide.visible && !guide.hiddenAttr && guide.display !== 'none',
+      JSON.stringify(guide)
+    );
+    check('m-guide: overlay is pointer-transparent', guide.pointerEvents === 'none', guide.pointerEvents);
+
+    // and a swipe must still steer with the outline on top of the board
+    const sw = await page.evaluate(async () => {
+      const g = window.__game;
+      g.setDir(1, 0);
+      g.setFood(0, 0);
+      const c = document.getElementById('scene');
+      const r = c.getBoundingClientRect();
+      const cx = r.left + r.width / 2,
+        cy = r.top + r.height / 2;
+      const mk = (x, y) => new Touch({ identifier: 1, target: c, clientX: x, clientY: y });
+      const t0 = mk(cx, cy);
+      c.dispatchEvent(new TouchEvent('touchstart', { touches: [t0], changedTouches: [t0], bubbles: true }));
+      c.dispatchEvent(
+        new TouchEvent('touchend', { touches: [], changedTouches: [mk(cx - 90, cy)], bubbles: true })
+      );
+      await new Promise((r2) => setTimeout(r2, 200));
+      return g.queue.length;
+    });
+    check('m-guide: swipe still steers with the outline showing', sw > 0, 'queued=' + sw);
+
     check('m-clean: no page errors', errors.length === 0, errors.slice(0, 2).join(' | '));
     await ctx.close();
   } finally {

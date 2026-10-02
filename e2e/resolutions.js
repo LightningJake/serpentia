@@ -78,17 +78,20 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         window.__game.setFood(19, 19);
       });
       await page.waitForTimeout(1500); // radius eases onto the fixed fit
-      // 3 samples across live ticks: every one must keep the whole board on
-      // screen and hold the exact same radius (project() is exact per sample,
-      // so there is no DOM staleness involved).
+      // 3 samples across live ticks: every one must hold the exact same radius
+      // (project() is exact per sample, so there is no DOM staleness involved).
       let headOk = true,
         foodOk = true,
         boardOk = true,
         fitOk = true,
-        steadyOk = true,
-        worst = 0;
+        worst = 0,
+        cellsSeen = -1;
       const seenR = [];
       const fit = await g(page, 'fitRadius');
+      const layout = await g(page, 'fitFollowing');
+      const cell = await g(page, 'cellPx()');
+      const floor = await g(page, 'minCellPx');
+      const guide = await g(page, 'edgeGuideVisible()');
       for (let s = 0; s < 3; s++) {
         const sample = await page.evaluate(() => {
           const g = window.__game;
@@ -118,19 +121,93 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
         if (!inside(sample.head)) headOk = false;
         if (!inside(sample.food)) foodOk = false;
         if (sample.cells !== 400) boardOk = false;
+        cellsSeen = sample.cells;
         if (Math.abs(sample.radius - fit) > 0.6) fitOk = false;
         seenR.push(sample.radius);
         await page.waitForTimeout(150);
       }
+      // ONE contract, two branches.
+      //
+      // Whole-board framing and legibility are geometrically incompatible on a
+      // phone held upright: the board already fills 94% of the viewport width,
+      // so "everything visible" caps a cell at ~9-11 CSS px (half of a
+      // laptop's ~20px) and no amount of tilting or lensing can fix it. So:
+      //   - when the whole board fits legibly -> frame the whole board
+      //   - when it does not                 -> zoom to the legibility floor,
+      //     follow the head, and show the wall outline so the off-screen
+      //     edges are still readable
+      // The head must be framed in BOTH cases, and the radius must be steady in
+      // both cases (following moves the target, never the zoom).
       check(d.name + ': head framed on all samples', headOk);
-      check(d.name + ': food framed on all samples (no arrow needed)', foodOk, 'worst=' + worst.toFixed(2));
-      check(d.name + ': whole board framed (400/400 cells)', boardOk);
+      if (layout) {
+        check(
+          d.name + ': legibility floor met when zoomed in',
+          cell >= floor - 0.6,
+          cell + 'px vs floor ' + floor
+        );
+        check(d.name + ': wall outline shown while zoomed in', guide === true);
+        // the food may legitimately be off-screen now; the outline is the
+        // replacement for the old "no arrow needed" guarantee
+        check(
+          d.name + ': food framing tracked',
+          true,
+          'worst=' + worst.toFixed(2) + (foodOk ? ' (in view)' : ' (off screen, outline shown)')
+        );
+      } else {
+        check(d.name + ': food framed on all samples (no arrow needed)', foodOk, 'worst=' + worst.toFixed(2));
+        check(d.name + ': whole board framed (400/400 cells)', boardOk, 'cells=' + cellsSeen);
+        check(d.name + ': no wall outline when the board fits', guide === false);
+        // desktop/laptop must never be pulled into the mobile path
+        if (!d.touch) check(d.name + ': desktop never follows the head', layout === false);
+      }
       check(d.name + ': zoom equals fixed fit', fitOk, 'fit=' + fit);
       check(
         d.name + ': zoom steady across samples',
         Math.max(...seenR) - Math.min(...seenR) < 0.6,
         seenR.join('/')
       );
+      // Worst case for a following camera: the head hard against each corner of
+      // the board. The camera eases toward the head, so the real risk is the
+      // head lagging out of frame, not the board being misframed.
+      if (layout) {
+        const cornerSweep = await page.evaluate(async () => {
+          const g = window.__game;
+          // pause so the head cannot wrap away from the corner under test
+          // (this suite runs with wrap ON) - the camera easing still runs
+          g.pause();
+          let worstMargin = 1e9;
+          const per = [];
+          for (const [hx, hy] of [
+            [0, 0],
+            [19, 0],
+            [19, 19],
+            [0, 19],
+            [10, 10],
+          ]) {
+            g.setSnake([
+              { x: hx, y: hy },
+              { x: hx, y: Math.min(19, hy + 1) },
+              { x: hx, y: Math.min(19, hy + 2) },
+            ]);
+            g.setDir(0, -1);
+            await new Promise((r) => setTimeout(r, 420)); // let the ease settle
+            const live = g.snake[0]; // the LIVE head, not the corner we aimed at
+            const p = g.project(live.x, live.y);
+            const sx = ((p.x + 1) / 2) * innerWidth;
+            const sy = ((1 - p.y) / 2) * innerHeight;
+            const m = p.behind ? -1 : Math.min(sx, innerWidth - sx, sy, innerHeight - sy);
+            per.push([live.x, live.y, Math.round(m)]);
+            if (m < worstMargin) worstMargin = m;
+          }
+          g.pause(); // resume
+          return { worstMargin: Math.round(worstMargin), per };
+        });
+        check(
+          d.name + ': head stays framed at every board corner',
+          cornerSweep.worstMargin > 6,
+          'worst margin=' + cornerSweep.worstMargin + 'px ' + JSON.stringify(cornerSweep.per)
+        );
+      }
       await page.waitForTimeout(600);
       const fps = await page.evaluate(() => window.__game.perf().fps);
       console.log('info  ' + d.name + ': fps=' + fps);

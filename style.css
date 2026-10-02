@@ -47,6 +47,27 @@ body {
   display: block;
   z-index: 0;
 }
+/* Board-edge outline, shown only when the phone camera has zoomed in far
+   enough that the board runs off-screen. pointer-events:none so it never
+   swallows a tap-to-steer. Visibility is toggled via the `hidden` attribute,
+   which the global [hidden] rule already collapses. */
+#edge-guide {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: none;
+  overflow: visible;
+}
+#edge-guide-poly {
+  fill: none;
+  stroke: #6fd3ff;
+  stroke-width: 2;
+  stroke-dasharray: 7 6;
+  opacity: 0.5;
+  vector-effect: non-scaling-stroke;
+}
 #loader {
   position: absolute;
   inset: 0;

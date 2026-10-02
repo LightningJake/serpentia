@@ -2390,6 +2390,9 @@
   var FIT_HALF = (GRID * CELL) / 2 + 0.5, // board half-extent incl. the wall lip
     FIT_TOP = 1.8; // tallest wall style (crystal)
   var FIT_R = 38; // live fit radius, refreshed on resize and on orbit
+  var MIN_CELL_PX = 18; // legibility floor for touch layouts (see applyFit)
+  var FOLLOW_LEASH = 1.6; // max cells the camera target may trail the head by
+  var fitFollow = false; // true when the floor zoomed in and the camera must track the head
   var lastTopView = false; // last seen top-down state, to re-fit on toggle
   // 8 corners of the board box, in world space
   var FIT_CORNERS = [];
@@ -2403,7 +2406,10 @@
   // DEcreasing in R (further away = smaller on screen), which is what makes the
   // bisection below valid. A corner behind the camera counts as infinitely far
   // too big, so it is treated as +Infinity rather than a magic constant.
-  function fitOvershoot(R, usePhi, useTheta, tX, tY) {
+  // Camera basis for an ARBITRARY orbit/distance, for the fit solve.
+  // Deliberately NOT called camBasis(): that name belongs to the live-basis
+  // helper above, which viewSteer() and the basis() test hook depend on.
+  function orbitBasis(R, usePhi, useTheta) {
     var sp = Math.sin(usePhi),
       cp = Math.cos(usePhi),
       st = Math.sin(useTheta),
@@ -2433,19 +2439,33 @@
     ry /= rl;
     rz /= rl;
     // up = cross(right, forward)
-    var ux = ry * fz - rz * fy,
-      uy = rz * fx - rx * fz,
-      uz = rx * fy - ry * fx;
+    return {
+      cx: cx,
+      cy: cy,
+      cz: cz,
+      fx: fx,
+      fy: fy,
+      fz: fz,
+      rx: rx,
+      ry: ry,
+      rz: rz,
+      ux: ry * fz - rz * fy,
+      uy: rz * fx - rx * fz,
+      uz: rx * fy - ry * fx,
+    };
+  }
+  function fitOvershoot(R, usePhi, useTheta, tX, tY) {
+    var b = orbitBasis(R, usePhi, useTheta);
     var worst = 0;
     for (var i = 0; i < FIT_CORNERS.length; i++) {
       var P = FIT_CORNERS[i];
-      var vx = P.x - cx,
-        vy = P.y - cy,
-        vz = P.z - cz;
-      var zc = vx * fx + vy * fy + vz * fz; // depth in front of the camera
+      var vx = P.x - b.cx,
+        vy = P.y - b.cy,
+        vz = P.z - b.cz;
+      var zc = vx * b.fx + vy * b.fy + vz * b.fz; // depth in front of the camera
       if (zc <= 1e-4) return Infinity;
-      var xc = vx * rx + vy * ry + vz * rz;
-      var yc = vx * ux + vy * uy + vz * uz;
+      var xc = vx * b.rx + vy * b.ry + vz * b.rz;
+      var yc = vx * b.ux + vy * b.uy + vz * b.uz;
       var m = Math.max(Math.abs(xc) / (tX * zc), Math.abs(yc) / (tY * zc));
       if (m > worst) worst = m;
     }
@@ -2471,14 +2491,73 @@
   function applyFit() {
     if (mode !== '3d' || !camera) return;
     var topNow = !!($('opt-cam') && $('opt-cam').value === 'top');
-    FIT_R = computeFitRadius(camera.aspect, topNow ? 0.16 : phi, theta);
-    // fog is expressed in world units, so it has to track the fit distance or
-    // a wide portrait frame would sit entirely inside the fog band. The band is
-    // pushed well past the board so only the distant scenery hazes over.
+    var usePhi = topNow ? 0.16 : phi;
+    var whole = computeFitRadius(camera.aspect, usePhi, theta);
+    FIT_R = whole;
+    fitFollow = false;
+    // LEGIBILITY FLOOR (touch layouts only).
+    //
+    // Framing the whole 20x20 board is not always compatible with being able
+    // to read it. On a phone held upright the board already consumes 94% of
+    // the viewport width, so "whole board visible" caps a cell at ~9-11 CSS px
+    // - about half the ~20px a laptop gets, and too small to play. That is not
+    // a tuning problem: the ceiling is geometric. Tilting toward top-down makes
+    // it WORSE and a narrower lens does nothing, because a portrait frame is
+    // width-bound.
+    //
+    // So on touch layouts, if the whole-board fit lands under MIN_CELL_PX, we
+    // stop fitting the whole board: we move in until cells are legible and
+    // follow the snake instead (see the camera target below). The board then
+    // overflows the screen edges, which is why the wall outline is drawn while
+    // this is active - without it the player cannot see where the walls are.
+    //
+    // Cell size is very close to inversely proportional to R (measured
+    // R*cell is constant to within a percent across the whole range), so the
+    // zoom needed for a target cell size is one multiply - no second bisection.
+    // Pointer-coarse covers phones AND tablets, and is false on every desktop,
+    // so laptops/desktops keep the exact framing and numbers they have now.
+    if (touchLayout()) {
+      var cellNow = cellPxAtRadius(whole, usePhi, theta);
+      if (cellNow > 0 && cellNow < MIN_CELL_PX) {
+        FIT_R = (whole * cellNow) / MIN_CELL_PX;
+        fitFollow = true;
+      }
+    }
     if (scene.fog) {
       scene.fog.near = FIT_R * 0.85;
       scene.fog.far = FIT_R * 2.4;
     }
+  }
+  // touch-primary layout: phones and tablets. Pointer-coarse rather than a
+  // width threshold, so a narrow desktop window is NOT treated as a phone and
+  // desktop framing is never changed.
+  function touchLayout() {
+    return !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+  }
+  // On-screen width of one cell at a given camera distance, in CSS px.
+  function cellPxAtRadius(R, usePhi, useTheta) {
+    var tY = Math.tan((camera.fov * Math.PI) / 360);
+    var tX = tY * camera.aspect;
+    var b = orbitBasis(R, usePhi, useTheta);
+    // two horizontally adjacent cell centres straddling the board middle
+    var pts = [
+      { x: -CELL / 2, y: 0, z: 0 },
+      { x: CELL / 2, y: 0, z: 0 },
+    ];
+    var scr = [];
+    for (var i = 0; i < pts.length; i++) {
+      var P = pts[i];
+      var vx = P.x - b.cx,
+        vy = P.y - b.cy,
+        vz = P.z - b.cz;
+      var zc = vx * b.fx + vy * b.fy + vz * b.fz;
+      if (zc <= 1e-4) return 0;
+      var xc = (vx * b.rx + vy * b.ry + vz * b.rz) / (tX * zc);
+      var yc = (vx * b.ux + vy * b.uy + vz * b.uz) / (tY * zc);
+      // NDC -> CSS px
+      scr.push({ x: ((xc + 1) / 2) * window.innerWidth, y: ((1 - yc) / 2) * window.innerHeight });
+    }
+    return Math.hypot(scr[1].x - scr[0].x, scr[1].y - scr[0].y);
   }
   // Look-target food weight is gone with the auto-fit: the whole board is
   // framed, so the camera no longer has to chase the food.
@@ -3898,19 +3977,39 @@
     }
     // Fixed framing. The radius is a pure function of the viewport (FIT_R,
     // refreshed on resize) - it NEVER depends on where the snake or the food
-    // is, so there is no zoom pumping while playing. The look target stays on
-    // the board centre for the same reason: chasing the head meant the frame
-    // drifted even when the zoom was steady.
+    // is, so there is no zoom pumping while playing. On desktop/laptop the look
+    // target stays on the board centre for the same reason: chasing the head
+    // meant the frame drifted even when the zoom was steady, and the whole board
+    // already fits.
     //
-    // The target is therefore ALWAYS the board centre, because the whole board
-    // is visible without zooming. The old "Follow cam" toggle that chased the
-    // head is gone: with the board always in frame there is nothing left for
-    // it to do, and a settings switch that silently does nothing is worse than
-    // no switch. Persisted settings are keyed by id, so an existing
-    // "opt-follow" entry in a returning player's saved settings is simply
-    // ignored.
-    desiredTarget.set(0, 0, 0);
-    camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
+    // Touch layouts are the one exception. When applyFit() had to zoom in past
+    // the whole-board fit to reach the legibility floor (MIN_CELL_PX), part of
+    // the board is off-screen and a fixed centre target would let the snake
+    // wander out of frame. So there the target tracks the head. The radius is
+    // still fixed, so following does NOT reintroduce zoom breathing - only the
+    // look target moves, and it is smoothed and leashed so the head can never
+    // lag far enough to leave the screen.
+    if (fitFollow && snake.length) {
+      var hw2 = gridToWorld(snake[0].x, snake[0].y);
+      desiredTarget.set(hw2.x, 0, hw2.z);
+      // faster easing than the desktop path: a slow lerp would let a fast snake
+      // outrun the camera at high speed
+      camTarget.lerp(desiredTarget, Math.min(1, cdt * 8));
+      // hard leash: whatever the easing does, the target stays within
+      // FOLLOW_LEASH cells of the head, so the head is always well inside the
+      // frame instead of merely usually inside it
+      var lx = camTarget.x - hw2.x,
+        lz = camTarget.z - hw2.z;
+      var ld = Math.hypot(lx, lz);
+      if (ld > FOLLOW_LEASH) {
+        var k = FOLLOW_LEASH / ld;
+        camTarget.x = hw2.x + lx * k;
+        camTarget.z = hw2.z + lz * k;
+      }
+    } else {
+      desiredTarget.set(0, 0, 0);
+      camTarget.lerp(desiredTarget, Math.min(1, cdt * 3));
+    }
     var wantR = FIT_R;
     if (now < holdUntil && radiusHold > 0)
       radius += (radiusHold - radius) * Math.min(1, cdt * 9); // inspection: quick, still smooth
@@ -3926,7 +4025,57 @@
     );
     camera.lookAt(camTarget.x, 0, camTarget.z);
     renderer.render(scene, camera);
+    updateEdgeGuide();
     snapFrame(); // queued share-picture capture reads the fresh buffer here
+  }
+
+  // Project the board's wall rectangle to screen space. Only visible while the
+  // legibility floor is active (fitFollow), i.e. when part of the board is off
+  // screen; otherwise the real 3D walls are in frame and this is hidden.
+  // Uses the same clip->CSS px mapping as the rest of the camera code.
+  var edgeGuideEl = null,
+    edgeGuidePoly = null;
+  function updateEdgeGuide() {
+    if (mode !== '3d') return;
+    if (!edgeGuideEl) {
+      edgeGuideEl = $('edge-guide');
+      edgeGuidePoly = $('edge-guide-poly');
+      if (!edgeGuideEl || !edgeGuidePoly) return;
+    }
+    // NOTE: `hidden` is an HTMLElement IDL property; SVGElement does not have
+    // it. Assigning svg.hidden = false would only create a JS expando and leave
+    // the content attribute in place, so the global [hidden]{display:none}
+    // rule would keep the guide invisible forever. Toggle the attribute.
+    if (!fitFollow) {
+      if (!edgeGuideEl.hasAttribute('hidden')) edgeGuideEl.setAttribute('hidden', '');
+      return;
+    }
+    var m = camera.projectionMatrix.clone().multiply(camera.matrixWorldInverse);
+    var e = m.elements;
+    var pts = '',
+      off = 0;
+    for (var i = 0; i < 4; i++) {
+      var wx = i === 0 || i === 3 ? -FIT_HALF : FIT_HALF;
+      var wz = i < 2 ? -FIT_HALF : FIT_HALF;
+      var cw = e[3] * wx + e[7] * 0 + e[11] * wz + e[15];
+      if (cw <= 1e-4) {
+        off = 1;
+        break;
+      }
+      var cx = (e[0] * wx + e[4] * 0 + e[8] * wz + e[12]) / cw;
+      var cy = (e[1] * wx + e[5] * 0 + e[9] * wz + e[13]) / cw;
+      var sx = ((cx + 1) / 2) * window.innerWidth;
+      var sy = ((1 - cy) / 2) * window.innerHeight;
+      pts += (i ? ' ' : '') + sx.toFixed(1) + ',' + sy.toFixed(1);
+    }
+    // A corner behind the camera means the projection is unusable this frame;
+    // hide rather than draw a wrong shape.
+    if (off) {
+      if (!edgeGuideEl.hasAttribute('hidden')) edgeGuideEl.setAttribute('hidden', '');
+      return;
+    }
+    edgeGuidePoly.setAttribute('points', pts);
+    edgeGuideEl.removeAttribute('hidden');
   }
 
   // ---------- Test hooks (harmless in production; used by e2e) ----------
@@ -4067,6 +4216,28 @@
     },
     get biomeName() {
       return LEVELS[themeIdx].name;
+    },
+    // camera-layout introspection, so e2e can assert the legibility floor and
+    // the "desktop is untouched" guarantee instead of eyeballing screenshots
+    get fitFollowing() {
+      return fitFollow;
+    },
+    get minCellPx() {
+      return MIN_CELL_PX;
+    },
+    get touchLayout() {
+      return touchLayout();
+    },
+    cellPx: function () {
+      if (mode !== '3d' || !camera) return null;
+      var sel = $('opt-cam');
+      var isTop = !!(sel && sel.value === 'top');
+      return cellPxAtRadius(radius, isTop ? 0.16 : phi, theta);
+    },
+    edgeGuideVisible: function () {
+      var el = $('edge-guide');
+      // attribute, not el.hidden: SVGElement has no hidden IDL property
+      return !!(el && !el.hasAttribute('hidden'));
     },
     setShield: function (x, y, ttl) {
       shield = { x: x, y: y };

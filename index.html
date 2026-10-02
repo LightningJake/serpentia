@@ -79,6 +79,13 @@
       </div>
       <canvas id="scene" aria-label="3D snake game board"></canvas>
 
+      <!-- Board-edge outline. Only shown when the camera has zoomed in to keep
+           cells legible on a phone, which lets the board run off the screen
+           edges; without this the player cannot see where the walls are. -->
+      <svg id="edge-guide" aria-hidden="true" focusable="false" hidden>
+        <polygon id="edge-guide-poly" />
+      </svg>
+
       <!-- live region: updateHUD() writes only on value change, so this does
            not re-announce the HUD on every tick -->
       <header id="hud" aria-live="polite" aria-atomic="false">
