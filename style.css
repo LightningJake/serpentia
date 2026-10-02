@@ -219,6 +219,14 @@ body {
 .btn.ghost {
   padding: 9px 12px;
 }
+/* destructive action: visually distinct, and the contrast test checks it */
+.btn.danger {
+  color: #ffb4b4;
+  border-color: #7a2b2b;
+}
+.btn.danger:hover {
+  background: #3a1414;
+}
 
 #settings-panel {
   display: flex;
@@ -558,11 +566,6 @@ kbd {
 }
 #dpad.force {
   display: flex;
-}
-@media (pointer: coarse) {
-  #dpad {
-    display: flex;
-  }
 }
 
 #toast {

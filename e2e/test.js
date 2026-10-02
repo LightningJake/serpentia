@@ -591,6 +591,59 @@ async function newPage(browser, blockCDN) {
     const bannerTxt = await page.locator('#banner').textContent();
     check('level: milestone banner shown', /LEVEL 2/.test(bannerTxt || ''), bannerTxt);
 
+    // Speed curve: asymptotic, so it keeps improving for the whole run instead
+    // of slamming into a floor and sitting flat. The old linear curve reached
+    // 55ms by food #12 (fast) / #22 (normal) and never moved again.
+    const curve = await page.evaluate(() => {
+      const gme = window.__game;
+      gme.start();
+      gme.pause();
+      document.getElementById('opt-speed').value = 'normal';
+      const at = (n) => gme.tickForFoods(n);
+      return { f0: at(0), f6: at(6), f22: at(22), f60: at(60), f200: at(200) };
+    });
+    check(
+      'speed curve: strictly decreasing, never clamped flat',
+      curve.f0 > curve.f6 && curve.f6 > curve.f22 && curve.f22 > curve.f60 && curve.f60 > curve.f200,
+      JSON.stringify(curve)
+    );
+    check(
+      'speed curve: starts exactly at the selected preset (160 slow / 120 normal)',
+      Math.abs(curve.f0 - 120) < 0.001,
+      'f0=' + curve.f0
+    );
+    check(
+      'speed curve: approaches the floor but never reaches it',
+      curve.f200 > 55 && curve.f200 < 56,
+      'f200=' + curve.f200
+    );
+
+    // A bonus orb grows the snake, so it must count toward the level goal too.
+    const bonusGoal = await page.evaluate(() => {
+      const gme = window.__game;
+      gme.start();
+      gme.pause();
+      gme.clearBonus();
+      // 5 regular foods -> level 1, goal 5/6
+      for (let i = 0; i < 5; i++) {
+        const s = gme.snake[0];
+        gme.setFood(s.x + 1, s.y);
+        gme.step();
+      }
+      const before = { level: gme.level, goal: document.getElementById('goal').textContent };
+      // now eat a bonus orb instead of the regular food
+      gme.clearBonus();
+      const s2 = gme.snake[0];
+      gme.setBonus(s2.x + 1, s2.y, 90000);
+      gme.step();
+      return { before, after: { level: gme.level, goal: document.getElementById('goal').textContent } };
+    });
+    check(
+      'bonus orb: counts toward the level goal (5 food + 1 bonus -> level 2)',
+      bonusGoal.before.goal === '5/6' && bonusGoal.after.level === 2,
+      JSON.stringify(bonusGoal)
+    );
+
     // Prestige: die at level 2, prestige restarts boosted (+10%)
     await page.evaluate(() => {
       window.__game.start();
@@ -783,6 +836,48 @@ async function newPage(browser, blockCDN) {
       w.checked = false;
       w.dispatchEvent(new Event('change', { bubbles: true }));
     });
+
+    // Kid mode must be REVERSIBLE. It used to be a one-way preset: unchecking
+    // did nothing, so the player was stuck in kid settings with no indication.
+    const kidRestore = await page.evaluate(() => {
+      const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el.type === 'checkbox') el.checked = v;
+        else el.value = v;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+      // a distinctive starting point
+      set('opt-kid', false);
+      set('opt-speed', 'fast');
+      set('opt-obstacles', true);
+      const before = {
+        speed: document.getElementById('opt-speed').value,
+        obstacles: document.getElementById('opt-obstacles').checked,
+      };
+      set('opt-kid', true);
+      const during = {
+        speed: document.getElementById('opt-speed').value,
+        wrap: document.getElementById('opt-wrap').checked,
+        obstacles: document.getElementById('opt-obstacles').checked,
+      };
+      set('opt-kid', false);
+      const after = {
+        speed: document.getElementById('opt-speed').value,
+        obstacles: document.getElementById('opt-obstacles').checked,
+      };
+      return { before, during, after };
+    });
+    check(
+      'kid mode: presets applied while on',
+      kidRestore.during.speed === 'slow' && kidRestore.during.wrap && !kidRestore.during.obstacles,
+      JSON.stringify(kidRestore.during)
+    );
+    check(
+      'kid mode: unchecking restores the previous settings',
+      kidRestore.after.speed === kidRestore.before.speed &&
+        kidRestore.after.obstacles === kidRestore.before.obstacles,
+      JSON.stringify({ before: kidRestore.before, after: kidRestore.after })
+    );
 
     // New biomes cycle past Space
     for (const [idx, name] of [

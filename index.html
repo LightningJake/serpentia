@@ -92,35 +92,35 @@
         <div class="hud-left">
           <div class="logo">🐍 3D SNAKE</div>
           <div class="stats">
-            <span class="pill" title="Current score"
+            <span class="pill" data-i18n-title="tip_score"
               ><span data-i18n="pill_score">Score</span> <b id="score">0</b></span
             >
-            <span class="pill" title="Best score on this browser"
+            <span class="pill" data-i18n-title="tip_best"
               ><span data-i18n="pill_best">Best</span> <b id="best">0</b></span
             >
-            <span class="pill" title="Current speed level" id="pill-level"
+            <span class="pill" data-i18n-title="tip_level" id="pill-level"
               ><span data-i18n="pill_level">Level</span> <b id="level">1</b></span
             >
-            <span class="pill" title="Snake length" id="pill-length"
+            <span class="pill" data-i18n-title="tip_length" id="pill-length"
               ><span data-i18n="pill_length">Length</span> <b id="length">3</b></span
             >
-            <span class="pill" title="Foods to next level" id="pill-goal"
+            <span class="pill" data-i18n-title="tip_goal" id="pill-goal"
               ><span data-i18n="pill_goal">Goal</span> <b id="goal">0/6</b></span
             >
-            <span class="pill combo" id="pill-combo" hidden title="Eat quickly to chain combos"
+            <span class="pill combo" id="pill-combo" hidden data-i18n-title="tip_combo"
               ><span data-i18n="pill_combo">Combo</span> <b id="combo">x1</b></span
             >
             <span class="pill" id="pill-shield" hidden title="Shield">🛡</span>
           </div>
         </div>
         <div class="hud-right">
-          <button id="btn-pause" class="btn" title="Pause / resume (Space or P)" data-i18n="btn_pause">
+          <button id="btn-pause" class="btn" data-i18n-title="tip_pause" data-i18n="btn_pause">
             ⏸ Pause
           </button>
-          <button id="btn-restart" class="btn" title="Restart (Enter)" data-i18n="btn_restart">
+          <button id="btn-restart" class="btn" data-i18n-title="tip_restart" data-i18n="btn_restart">
             ↻ Restart
           </button>
-          <button id="btn-help" class="btn ghost" title="How to play">?</button>
+          <button id="btn-help" class="btn ghost" data-i18n-title="tip_help">?</button>
         </div>
       </header>
 
@@ -145,18 +145,18 @@
                   type="button"
                   data-mode="classic"
                   data-i18n="mode_classic"
-                  title="Solid walls, no obstacles"
+                  data-i18n-title="tip_mode_classic"
                 >
                   Classic
                 </button>
-                <button type="button" data-mode="wrap" data-i18n="mode_wrap" title="Pass through walls">
+                <button type="button" data-mode="wrap" data-i18n="mode_wrap" data-i18n-title="tip_mode_wrap">
                   Wrap
                 </button>
                 <button
                   type="button"
                   data-mode="obstacles"
                   data-i18n="mode_obstacles"
-                  title="Deadly obstacles appear"
+                  data-i18n-title="tip_mode_obstacles"
                 >
                   Obstacles
                 </button>
@@ -298,6 +298,11 @@
             <span data-i18n="update_t">A new version is ready.</span>
             <button id="btn-update" class="btn primary" data-i18n="update_btn">↻ Refresh now</button>
           </div>
+          <div class="row" id="erase-row" hidden>
+            <button id="btn-erase" class="btn ghost danger" data-i18n="erase_btn">
+              🗑 Erase all progress
+            </button>
+          </div>
           <p class="hint">
             <span data-i18n="hint_goal">6 foods per level, new arena each level</span> &nbsp;•&nbsp;
             <span data-i18n="hint_keys">Pause: Space • Restart: Enter • Drag to orbit • Wheel to zoom</span>
@@ -313,11 +318,10 @@
               <b>Easiest:</b> click or tap the board where you want the snake to go.
             </li>
             <li data-i18n-html="h2">
-              Keyboard (Arrows / WASD), swipe, or the on-screen buttons work too —
-              <b>WASD follows the camera</b>, so W is always "up on screen". Turn on <b>Buttons</b> in
-              settings to always show them.
+              Keyboard: <b>← / →</b> or <b>A / D</b> turn the snake (it always moves forward).
+              <b>Tap the board</b>, swipe, or the ◀ ▶ buttons work too.
             </li>
-            <li data-i18n-html="h3">Eat glowing orbs to grow and score. Speed increases each 4 foods.</li>
+            <li data-i18n-html="h3">Eat glowing orbs to grow and score. The snake speeds up as you eat.</li>
             <li data-i18n-html="h4">
               Chain eats within 5s for a <b>combo multiplier</b> (up to x5). Pink <b>bonus orbs</b> are worth
               50 × combo — grab them fast!
@@ -342,8 +346,10 @@
               stacks forever.
             </li>
             <li data-i18n-html="h12">
-              The <b>camera always frames both you and the food</b> — it zooms out as they drift apart. Wheel
-              / pinch zooms freely for a few seconds, then framing resumes.
+              The <b>zoom is fixed</b> for your screen, so it never pumps while you play. Wheel / pinch zooms
+              freely for a few seconds, then framing resumes. On a phone the camera zooms in until the board
+              is readable and follows the snake, with a <b>dashed outline</b> marking the walls that run
+              off-screen.
             </li>
             <li data-i18n-html="h15">
               Terrain rules: <b>🧊 Ice</b> is slippery (turns land one cell later), <b>🏜️ Desert</b> food

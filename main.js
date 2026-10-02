@@ -14,6 +14,7 @@
   var MAX_DT = 0.25;
   var SPEED_PRESETS = { slow: 160, normal: 120, fast: 90 }; // responsive defaults
   var MIN_INTERVAL = 55;
+  var SPEED_RAMP = 22; // foods to decay ~37% of the remaining headroom (see tickForFoods)
   var LERP_SPEED = 18; // was 14 — snappier slide
   var BONUS_TTL = 7000; // bonus pickup lifetime (ms of play time)
   var BONUS_EVERY = 5; // spawn a bonus every N regular foods
@@ -116,7 +117,24 @@
         memStore[k] = v;
       }
     },
+    remove: function (k) {
+      delete memStore[k];
+      try {
+        localStorage.removeItem(k);
+      } catch (e) {}
+    },
   };
+  // Every persisted key, for the "erase progress" action. Anything added to
+  // storage later must be listed here or it will survive a reset, which is the
+  // whole point of the button.
+  var SAVE_KEYS = [
+    'snake3d.best',
+    'snake3d.life',
+    'snake3d.ach',
+    'snake3d.settings',
+    'snake3d.seen',
+    'snake3d.seenKeys',
+  ];
   best = Number(store.get('snake3d.best') || 0) || 0;
 
   // ---------- i18n ----------
@@ -167,6 +185,11 @@
     var arias = document.querySelectorAll('[data-i18n-aria]');
     for (var a = 0; a < arias.length; a++)
       arias[a].setAttribute('aria-label', t(arias[a].getAttribute('data-i18n-aria')));
+    // tooltips: the HUD pills and the mode/transport buttons carried hardcoded
+    // English title= text, so a non-English player saw English on hover
+    var titles = document.querySelectorAll('[data-i18n-title]');
+    for (var ti = 0; ti < titles.length; ti++)
+      titles[ti].setAttribute('title', t(titles[ti].getAttribute('data-i18n-title')));
     // dynamic button labels follow the current state
     if (typeof setState === 'function' && (state === 'playing' || state === 'paused')) {
       var bp = $('btn-pause');
@@ -187,12 +210,25 @@
   }
 
   // ---------- Lifetime stats + achievements (persisted) ----------
+  // SAVE_VERSION guards the shape of the saved blobs. Without it, renaming or
+  // removing a stat key would silently reset every returning player's progress
+  // to zero with no way to tell that is what happened. Bump it and handle the
+  // old shape deliberately rather than discovering it in someone's save file.
+  var SAVE_VERSION = 1;
   var life = { games: 0, foods: 0, bestCombo: 0, bestLevel: 1, wins: 0, prestige: 0, deathsBlocked: 0 };
   var ach = [];
   function loadLife() {
     try {
       var o = JSON.parse(store.get('snake3d.life') || 'null');
+      // A v0 blob (pre-versioning) has no `v` field and is read as-is: the
+      // shape has not changed yet, so this is the migration path to keep.
+      var v = o && o.v != null ? o.v : 0;
       if (o) for (var k in life) if (o[k] != null) life[k] = o[k];
+      if (v > SAVE_VERSION) {
+        // Written by a newer build than this one. Keep the numbers we can
+        // read rather than discarding the whole save.
+        if (typeof o === 'object' && o) for (var k2 in life) if (o[k2] != null) life[k2] = o[k2];
+      }
     } catch (e) {}
     try {
       ach = JSON.parse(store.get('snake3d.ach') || '[]') || [];
@@ -201,8 +237,26 @@
     }
   }
   function saveLife() {
-    store.set('snake3d.life', JSON.stringify(life));
+    var blob = { v: SAVE_VERSION };
+    for (var k in life) blob[k] = life[k];
+    store.set('snake3d.life', JSON.stringify(blob));
     store.set('snake3d.ach', JSON.stringify(ach));
+  }
+  // Wipe every saved key and return the player to a genuinely first-run
+  // state. Previously the only way to do this was to clear site data by hand.
+  function eraseProgress() {
+    for (var i = 0; i < SAVE_KEYS.length; i++) store.remove(SAVE_KEYS[i]);
+    best = 0;
+    life = { games: 0, foods: 0, bestCombo: 0, bestLevel: 1, wins: 0, prestige: 0, deathsBlocked: 0 };
+    ach = [];
+    settingsRestored = {};
+    if (typeof syncSkinOptions === 'function') syncSkinOptions();
+    if (typeof applyI18n === 'function') applyI18n();
+    if (typeof updateHUD === 'function') updateHUD();
+    if (typeof showMenuOv === 'function') {
+      state = 'menu';
+      showMenuOv();
+    }
   }
   function lifeLine() {
     if (!life.games) return t('life_first');
@@ -222,6 +276,9 @@
       t('life_level') +
       ' ' +
       life.bestLevel;
+    // `wins` has been persisted and incremented forever but was never shown
+    // anywhere, so winning the board left no visible trace outside the run.
+    if (life.wins > 0) s += ' • 🏆 ' + life.wins;
     if (life.prestige > 0) s += ' • ⭐+' + life.prestige * 10 + '%';
     return s;
   }
@@ -279,6 +336,9 @@
     }
     store.set('snake3d.settings', JSON.stringify(o));
   }
+  // which settings actually came from storage, so first-run defaults can tell
+  // "never chosen" apart from "chosen and left off"
+  var settingsRestored = {};
   function loadSettings() {
     var o = null;
     try {
@@ -290,8 +350,16 @@
     for (var i = 0; i < SETTING_IDS.length; i++) {
       var el = $(SETTING_IDS[i]);
       if (!el || o[SETTING_IDS[i]] === undefined) continue;
+      settingsRestored[SETTING_IDS[i]] = true;
       if (el.type === 'checkbox') el.checked = !!o[SETTING_IDS[i]];
       else el.value = o[SETTING_IDS[i]];
+      // A stored value that no longer exists (a removed speed/camera/lang/skin
+      // option, or a hand-edited value) would silently leave el.value === ''.
+      // That reads as a valid empty string everywhere downstream - e.g.
+      // baseInterval() treats '' as 'normal' - so the player ends up on a
+      // default they never chose and the control shows blank. Fall back to the
+      // first real option instead.
+      if (el.tagName === 'SELECT' && !el.value && el.options.length) el.selectedIndex = 0;
     }
   }
 
@@ -625,6 +693,10 @@
     if (sr) sr.hidden = !(state === 'over' || state === 'win');
     var gz = $('prestige-row');
     if (gz) gz.hidden = !((state === 'over' || state === 'win') && level >= 2);
+    // Only offer the reset once there is something to reset, and only from the
+    // menu (it lives outside the settings panel, which is menu-only).
+    var er = $('erase-row');
+    if (er) er.hidden = !(state === 'menu' && (life.games > 0 || best > 0 || ach.length > 0));
     // settings live in the main menu; pause gets the pointer note instead
     var sp = $('settings-panel');
     if (sp) sp.hidden = state !== 'menu';
@@ -1285,8 +1357,6 @@
     musicStep = 0,
     nextNoteT = 0,
     musicGain = null;
-  var MUSIC_BPM = 112; // fallback; each biome overrides via MUSICTHEMES
-  var PENTA = [0, 3, 5, 7, 10, 12, 10, 7, 5, 3];
   // Procedural voice per biome (order matches LEVELS): tempo, bass root
   // shift (semitones from A2), melody scale, lead/bass waveforms.
   var MUSICTHEMES = [
@@ -1379,6 +1449,21 @@
   function baseInterval() {
     var v = $('opt-speed') ? $('opt-speed').value : 'normal';
     return SPEED_PRESETS[v] || SPEED_PRESETS.normal;
+  }
+  // Tick length after N foods. Single source of truth: this used to be
+  // inlined in five places, which is how the speed curve and the help text
+  // drifted apart in the first place.
+  //
+  // The curve approaches MIN_INTERVAL asymptotically instead of clamping to it.
+  // The old linear "base - 3 per food" hit the floor by food #12 (fast) to #35
+  // (slow) and then sat there dead flat for the rest of the run: after that the
+  // only difficulty growth left in the game was obstacles. An exponential
+  // decay never actually reaches the floor, so the snake keeps getting
+  // imperceptibly faster for the whole run while each food matters less than
+  // the last - which is the shape a speed curve wants anyway.
+  function tickForFoods(n) {
+    var head = Math.max(1, baseInterval() - MIN_INTERVAL);
+    return MIN_INTERVAL + head * Math.exp(-n / SPEED_RAMP);
   }
   function reset() {
     snake = [
@@ -1627,9 +1712,9 @@
   // RESPONSIVE: rotate head instantly on input so turns feel immediate,
   // even though the grid step happens on the next fixed tick.
   function snapHeadVisual() {
-    if (mode !== '3d' || !snakeMeshes.length) return;
+    if (mode !== '3d' || !snakeHead) return;
     var eff = queue.length ? queue[0] : slideHeld || dir;
-    snakeMeshes[0].rotation.y = Math.atan2(eff.x, eff.y);
+    snakeHead.rotation.y = Math.atan2(eff.x, eff.y);
   }
   function step() {
     // ice rule: turns take effect one cell later (momentum pipeline)
@@ -1694,6 +1779,11 @@
       var multB = registerEat();
       var gainedB = Math.round(50 * multB * prestigeMult());
       score += gainedB;
+      // A bonus orb grows the snake just like a regular food (willGrow covers
+      // both), so it counts toward the level goal too. It used to bump only
+      // life.foods, which left the "FOODS n/6" pill under-reporting real
+      // progress and made the level/speed curve ignore the pink orbs.
+      foodsEaten++;
       life.foods++;
       if (combo > life.bestCombo) life.bestCombo = combo;
       saveLife();
@@ -1708,7 +1798,11 @@
       hideBonusMesh();
       say(t('bonus_ate', { n: gainedB }) + (multB > 1 ? ' (x' + multB + ')' : ''));
       if (multB >= 5) showBanner(t('banner_combo'));
-      tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
+      // the regular food is still on the board, so no spawnFood() here; the
+      // bonus/shield cadence re-checks on the next regular eat.
+      var nlB = SnakeLogic.levelFor(foodsEaten, FOODS_PER_LEVEL);
+      if (nlB > level) levelUp(nlB);
+      tickMs = tickForFoods(foodsEaten);
       if (snake.length >= GRID * GRID) {
         syncSnakeMeshes();
         updateHUD();
@@ -1735,7 +1829,7 @@
       var gt = gridToWorld(nx, ny);
       burst({ x: gt.x, y: 0.7, z: gt.z }, combo >= 3 ? 0xfff3a3 : 0xffc94d, Math.min(8 + combo * 2, 20));
       sfx.eat();
-      tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
+      tickMs = tickForFoods(foodsEaten);
       if (snake.length >= GRID * GRID) {
         syncSnakeMeshes();
         updateHUD();
@@ -2108,6 +2202,38 @@
       } catch (e) {}
     } else say(t('install_manual'));
   });
+  // Erase progress. Destructive, so it arms on the first tap and disarms if the
+  // player does anything else - no blocking confirm() dialog and no new modal.
+  var eraseArmed = false,
+    eraseTimer = 0;
+  function disarmErase() {
+    eraseArmed = false;
+    if (eraseTimer) clearTimeout(eraseTimer);
+    eraseTimer = 0;
+    var b = $('btn-erase');
+    if (b) b.textContent = t('erase_btn');
+  }
+  onTap($('btn-erase'), function () {
+    if (!eraseArmed) {
+      eraseArmed = true;
+      var b = $('btn-erase');
+      if (b) b.textContent = t('erase_confirm');
+      say(t('erase_armed'));
+      if (eraseTimer) clearTimeout(eraseTimer);
+      eraseTimer = setTimeout(disarmErase, 6000);
+      return;
+    }
+    disarmErase();
+    eraseProgress();
+    say(t('erase_done'));
+    announce(t('erase_done'));
+  });
+  // any run start re-arms silently: erasing is never something you want to
+  // finish off by accident
+  onTap($('btn-play'), disarmErase);
+  onTap($('btn-resume'), disarmErase);
+  onTap($('btn-restart'), disarmErase);
+  onTap($('btn-restart2'), disarmErase);
   var segBtns = document.querySelectorAll('#mode-seg button');
   for (var gi = 0; gi < segBtns.length; gi++) {
     (function (b) {
@@ -2137,19 +2263,45 @@
       else stopMusic();
     });
   if ($('opt-lang')) $('opt-lang').addEventListener('change', applyI18n);
-  // Kid mode: one tap sets slow + wrap + no obstacles (transparent presets)
+  // Kid mode: one tap sets slow + wrap + no obstacles (transparent presets).
+  // It has to be reversible: previously unchecking did nothing at all, so a
+  // player who turned it on could never get their speed/mode back and had no
+  // way to tell the preset was still in force. Remember what was there before
+  // and put it back.
+  var kidPrev = null;
   if ($('opt-kid'))
     $('opt-kid').addEventListener('change', function (e) {
       if (e.target.checked) {
+        kidPrev = {
+          speed: $('opt-speed').value,
+          wrap: $('opt-wrap').checked,
+          obstacles: $('opt-obstacles').checked,
+        };
         $('opt-speed').value = 'slow';
         $('opt-wrap').checked = true;
         $('opt-obstacles').checked = false;
-        saveSettings();
-        syncModeSeg();
-        tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
         say(t('kid_on'));
         announce(t('kid_on'));
+      } else if (kidPrev) {
+        $('opt-speed').value = kidPrev.speed;
+        $('opt-wrap').checked = kidPrev.wrap;
+        $('opt-obstacles').checked = kidPrev.obstacles;
+        kidPrev = null;
+        say(t('kid_off'));
+        announce(t('kid_off'));
+      } else {
+        // Kid mode was already on when the page loaded, so the pre-kid state
+        // was never captured. Fall back to plain Classic rather than leaving
+        // the preset silently in force.
+        $('opt-speed').value = 'normal';
+        $('opt-wrap').checked = false;
+        $('opt-obstacles').checked = false;
+        say(t('kid_off'));
+        announce(t('kid_off'));
       }
+      saveSettings();
+      syncModeSeg();
+      tickMs = tickForFoods(foodsEaten);
     });
   function applyDpad() {
     var el = $('opt-dpad');
@@ -2158,7 +2310,7 @@
   if ($('opt-dpad')) $('opt-dpad').addEventListener('change', applyDpad);
   if ($('opt-speed'))
     $('opt-speed').addEventListener('change', function () {
-      tickMs = Math.max(MIN_INTERVAL, baseInterval() - foodsEaten * 3);
+      tickMs = tickForFoods(foodsEaten);
     });
   // persist every setting on change
   for (var si = 0; si < SETTING_IDS.length; si++) {
@@ -2362,7 +2514,6 @@
     scene = null,
     camera = null,
     dirLight = null;
-  var snakeMeshes = [];
   var obstacleMeshes = [];
   var foodMesh = null,
     foodLight = null,
@@ -2927,12 +3078,25 @@
     return true;
   }
 
+  // Snake rendering. The head stays its own Mesh (it has a distinct material
+  // and two eye children); the body is two InstancedMeshes, one per stripe
+  // material.
+  //
+  // This used to be one Mesh per segment, which cost ~180 draw calls for a
+  // 180-segment snake and ~400 at the win condition - doubled again by the
+  // shadow pass. On a phone that is the single largest cost in the frame.
+  // Two instanced meshes bring the whole snake to 3 draw calls. Splitting by
+  // material (rather than one mesh plus per-instance colour) is deliberate:
+  // instanceColor only tints diffuse, while the two stripes differ in BOTH
+  // colour and emissive, so this keeps the look pixel-identical.
+  var snakeHead = null,
+    snakeBodyA = null,
+    snakeBodyB = null,
+    snakeLen = 0;
+  var segPos = []; // smoothed world x/z per segment, including the head
   function makeSegmentMesh(isHead) {
     var THREE = window.THREE;
-    var m = new THREE.Mesh(
-      window.__snakeGeo,
-      isHead ? window.__matH : snakeMeshes.length % 2 ? window.__matA : window.__matB
-    );
+    var m = new THREE.Mesh(window.__snakeGeo, window.__matH);
     m.castShadow = true;
     if (isHead) {
       var e1 = new THREE.Mesh(window.__eyeGeo, window.__eyeMat);
@@ -2945,23 +3109,39 @@
     scene.add(m);
     return m;
   }
+  // capacity is the whole board: a full 20x20 snake is a win, so the buffers
+  // never need to grow past that
+  var BODY_CAP = GRID * GRID;
+  function ensureSnakeMeshes() {
+    if (snakeHead) return;
+    var THREE = window.THREE;
+    snakeHead = makeSegmentMesh(true);
+    snakeBodyA = new THREE.InstancedMesh(window.__snakeGeo, window.__matA, BODY_CAP);
+    snakeBodyB = new THREE.InstancedMesh(window.__snakeGeo, window.__matB, BODY_CAP);
+    snakeBodyA.castShadow = snakeBodyB.castShadow = true;
+    // count is driven per frame from the live length
+    snakeBodyA.count = snakeBodyB.count = 0;
+    snakeBodyA.frustumCulled = snakeBodyB.frustumCulled = false;
+    scene.add(snakeBodyA);
+    scene.add(snakeBodyB);
+  }
   function syncSnakeMeshes(snap) {
     if (mode !== '3d') return;
-    while (snakeMeshes.length < snake.length) {
-      var mesh = makeSegmentMesh(snakeMeshes.length === 0);
-      var t = gridToWorld(snake[snakeMeshes.length].x, snake[snakeMeshes.length].y);
-      mesh.position.set(t.x, 0.55, t.z);
-      snakeMeshes.push(mesh);
+    ensureSnakeMeshes();
+    snakeLen = snake.length;
+    while (segPos.length < snake.length) {
+      var idx = segPos.length;
+      var t0 = gridToWorld(snake[idx] ? snake[idx].x : 0, snake[idx] ? snake[idx].y : 0);
+      segPos.push({ x: t0.x, z: t0.z });
     }
-    while (snakeMeshes.length > snake.length) scene.remove(snakeMeshes.pop());
-    for (var i = 0; i < snakeMeshes.length; i++) {
-      var mm = snakeMeshes[i];
-      mm.material = i === 0 ? window.__matH : i % 2 ? window.__matA : window.__matB;
-      for (var c = 0; c < mm.children.length; c++) mm.children[c].visible = i === 0;
-      if (snap) {
-        var w = gridToWorld(snake[i].x, snake[i].y);
-        mm.position.set(w.x, 0.55, w.z);
+    while (segPos.length > snake.length) segPos.pop();
+    if (snap) {
+      for (var s = 0; s < snake.length; s++) {
+        var w = gridToWorld(snake[s].x, snake[s].y);
+        segPos[s].x = w.x;
+        segPos[s].z = w.z;
       }
+      snakeHead.position.set(segPos[0].x, 0.55, segPos[0].z);
     }
   }
   function placeFoodMesh() {
@@ -3702,25 +3882,64 @@
   var fpsEMA = 60,
     lastQCheck = 0,
     quality = 'high';
-  function qualityTick(now) {
-    if (mode !== '3d' || !renderer) return;
-    if (now - lastQCheck < 3000) return;
-    lastQCheck = now;
-    if (fpsEMA >= 40 || quality === 'low') return;
-    if (quality === 'high') {
-      quality = 'medium';
-      renderer.setPixelRatio(1);
-    } else if (quality === 'medium') {
-      quality = 'low';
+  // Auto quality. Two problems with the original: a single slow window was
+  // enough to drop a tier permanently (one GC pause, one tab switch, or one
+  // biome painting its ground texture cost the player their shadows for the
+  // rest of the session), and there was no way back up even after the
+  // hitch was long over. So a step down now needs the slow FPS to PERSIST
+  // across consecutive windows, and a comfortably fast run steps back up.
+  var qLow = 0,
+    qHigh = 0;
+  function setQuality(next) {
+    if (next === 'low') {
       renderer.shadowMap.enabled = false;
       if (dirLight) dirLight.castShadow = false;
       if (scene)
         scene.traverse(function (o) {
           if (o.material) o.material.needsUpdate = true;
         });
+    } else if (next === 'medium') {
+      renderer.setPixelRatio(1);
+      // shadows come back on the way up, unless the player turned them off
+      if ($('opt-shadows') && $('opt-shadows').checked) {
+        renderer.shadowMap.enabled = true;
+        if (dirLight) dirLight.castShadow = true;
+      }
     }
+    quality = next;
     applyQualityVisuals();
-    say(t('perf_t', { q: quality }));
+  }
+  function qualityTick(now) {
+    if (mode !== '3d' || !renderer) return;
+    if (now - lastQCheck < 3000) return;
+    lastQCheck = now;
+    if (fpsEMA < 40) {
+      qHigh = 0;
+      if (quality !== 'low') qLow++;
+      else qLow = 0;
+      // two consecutive slow windows before shedding anything
+      if (qLow >= 2) {
+        qLow = 0;
+        var next = quality === 'high' ? 'medium' : 'low';
+        if (next !== quality) {
+          setQuality(next);
+          say(t('perf_t', { q: quality }));
+        }
+      }
+    } else if (fpsEMA > 55) {
+      // comfortably fast again: climb back, one tier at a time
+      qLow = 0;
+      if (quality !== 'high') {
+        qHigh++;
+        if (qHigh >= 3) {
+          qHigh = 0;
+          setQuality(quality === 'low' ? 'medium' : 'high');
+        }
+      } else qHigh = 0;
+    } else {
+      qLow = 0;
+      qHigh = 0;
+    }
   }
   function animate(now) {
     requestAnimationFrame(animate);
@@ -3798,30 +4017,65 @@
     var k = Math.min(1, cdt * LERP_SPEED);
     var eff = queue.length ? queue[0] : dir;
     if (squash > 0) squash = Math.max(0, squash - dt * 4);
-    for (var i = 0; i < snakeMeshes.length; i++) {
-      var mesh = snakeMeshes[i];
-      var w = gridToWorld(snake[i].x, snake[i].y);
-      if (Math.abs(w.x - mesh.position.x) > 2 || Math.abs(w.z - mesh.position.z) > 2) {
-        mesh.position.x = w.x;
-        mesh.position.z = w.z;
-      } else {
-        mesh.position.x += (w.x - mesh.position.x) * k;
-        mesh.position.z += (w.z - mesh.position.z) * k;
+    var n = snake.length;
+    if (snakeHead && n) {
+      var aArr = snakeBodyA.instanceMatrix.array;
+      var bArr = snakeBodyB.instanceMatrix.array;
+      var aN = 0,
+        bN = 0;
+      for (var i = 0; i < n; i++) {
+        var w = gridToWorld(snake[i].x, snake[i].y);
+        var sp = segPos[i];
+        // same smoothing as before: snap on a long jump (teleport / respawn),
+        // otherwise ease toward the target cell
+        if (Math.abs(w.x - sp.x) > 2 || Math.abs(w.z - sp.z) > 2) {
+          sp.x = w.x;
+          sp.z = w.z;
+        } else {
+          sp.x += (w.x - sp.x) * k;
+          sp.z += (w.z - sp.z) * k;
+        }
+        var yy = 0.55 + (reducedMotion ? 0 : Math.sin(t * 6 - i * 0.55) * 0.045);
+        var taper = 1.06 - (i / Math.max(1, n)) * 0.5; // thick head, thin tail
+        if (i === 0) {
+          snakeHead.position.set(sp.x, yy, sp.z);
+          if (squash > 0 && !reducedMotion)
+            snakeHead.scale.set(
+              taper * (1 + 0.3 * squash),
+              taper * (1 - 0.35 * squash),
+              taper * (1 + 0.3 * squash)
+            );
+          else snakeHead.scale.setScalar(taper);
+          snakeHead.rotation.y = Math.atan2(eff.x, eff.y);
+        } else {
+          // write translate+uniform-scale straight into the matrix array:
+          // column-major, so scale on the diagonal and translation at 12/13/14
+          var arr = i % 2 ? aArr : bArr; // matches the old i%2 ? matA : matB
+          var o = (i % 2 ? aN++ : bN++) * 16;
+          arr[o] = taper;
+          arr[o + 5] = taper;
+          arr[o + 10] = taper;
+          arr[o + 1] = arr[o + 2] = arr[o + 3] = 0;
+          arr[o + 4] = arr[o + 6] = arr[o + 7] = 0;
+          arr[o + 8] = arr[o + 9] = arr[o + 11] = 0;
+          arr[o + 12] = sp.x;
+          arr[o + 13] = yy;
+          arr[o + 14] = sp.z;
+          arr[o + 15] = 1;
+        }
       }
-      mesh.position.y = 0.55 + (reducedMotion ? 0 : Math.sin(t * 6 - i * 0.55) * 0.045);
-      var taper = 1.06 - (i / Math.max(1, snakeMeshes.length)) * 0.5; // thick head, thin tail
-      if (i === 0 && squash > 0 && !reducedMotion) {
-        mesh.scale.set(taper * (1 + 0.3 * squash), taper * (1 - 0.35 * squash), taper * (1 + 0.3 * squash));
-      } else mesh.scale.setScalar(taper);
-      if (i === 0) mesh.rotation.y = Math.atan2(eff.x, eff.y);
+      snakeBodyA.count = aN;
+      snakeBodyB.count = bN;
+      snakeBodyA.instanceMatrix.needsUpdate = true;
+      snakeBodyB.instanceMatrix.needsUpdate = true;
     }
     if (window.__headLight && snake.length) {
       var hw = gridToWorld(snake[0].x, snake[0].y);
       window.__headLight.position.set(hw.x, 1.6, hw.z);
     }
     // head glow trail: push current head pos through the ring buffer
-    if (window.__trail && snakeMeshes.length && !reducedMotion) {
-      var hp = snakeMeshes[0].position;
+    if (window.__trail && snakeHead && !reducedMotion) {
+      var hp = snakeHead.position;
       var tp = window.__trailPos,
         tn = window.__trailN;
       for (var ti = tn - 1; ti > 0; ti--) {
@@ -3943,11 +4197,11 @@
         window.__shieldMesh.visible = shieldLeft > 2000 || Math.floor(t * 8) % 2 === 0;
       } else window.__shieldMesh.scale.setScalar(hPop);
     }
-    if (window.__shieldRing && snakeMeshes.length) {
+    if (window.__shieldRing && snakeHead) {
       var showHalo = hasShield && state === 'playing';
       window.__shieldRing.visible = showHalo;
       if (showHalo) {
-        var shp = snakeMeshes[0].position;
+        var shp = snakeHead.position;
         window.__shieldRing.position.set(shp.x, 0.06, shp.z);
         if (!reducedMotion) {
           var shs = 1 + Math.sin(t * 6) * 0.08;
@@ -4089,6 +4343,11 @@
     get score() {
       return score;
     },
+    // getter, not a snapshot: `best` changes on death and on erase, and a
+    // captured value would silently report a stale best forever
+    get best() {
+      return best;
+    },
     get snake() {
       return snake.map(function (s) {
         return { x: s.x, y: s.y };
@@ -4140,6 +4399,7 @@
         foods: life.foods,
         bestCombo: life.bestCombo,
         bestLevel: life.bestLevel,
+        wins: life.wins || 0,
         prestige: life.prestige || 0,
         deathsBlocked: life.deathsBlocked || 0,
       };
@@ -4225,6 +4485,8 @@
     get minCellPx() {
       return MIN_CELL_PX;
     },
+    // the real speed curve, so e2e can assert its shape rather than a copy
+    tickForFoods: tickForFoods,
     get touchLayout() {
       return touchLayout();
     },
@@ -4448,6 +4710,17 @@
   loadSettings();
   parseDeepLinks();
   loadLife();
+  // The on-screen turn buttons used to be forced on by a
+  // `@media (pointer: coarse)` CSS rule, which made the "Buttons" setting do
+  // nothing at all on phones - a switch that silently cannot change anything.
+  // Now the CSS only obeys the checkbox, and touch layouts get it defaulted ON
+  // (there is no keyboard to steer with) while desktop keeps defaulting off.
+  // Applied only when the player has never chosen, so an explicit choice is
+  // never overridden - including an explicit "off" on a phone.
+  if (settingsRestored['opt-dpad'] === undefined && touchLayout() && $('opt-dpad')) {
+    $('opt-dpad').checked = true;
+    saveSettings();
+  }
   applyDpad();
   applyI18n();
   seenTut = store.get('snake3d.seen') === '1';

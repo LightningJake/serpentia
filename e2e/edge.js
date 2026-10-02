@@ -273,6 +273,97 @@ async function launch() {
     check('edge: storage-denied still scores', s2 === 10, 'score=' + s2);
     check('edge: storage-denied no errors', err2.length === 0, err2.slice(0, 2).join(' | '));
     await ctx2.close();
+
+    // 15. a saved setting value that no longer exists. Restoring it blindly
+    // left el.value === '', which reads as a valid empty string downstream
+    // (baseInterval treats '' as 'normal'), so the player silently got a
+    // default they never picked and the control rendered blank.
+    const ctx3 = await browser.newContext();
+    await ctx3.addInitScript(() => {
+      localStorage.setItem(
+        'snake3d.settings',
+        JSON.stringify({ 'opt-speed': 'ludicrous', 'opt-cam': 'hologram', 'opt-lang': 'klingon' })
+      );
+    });
+    const p3 = await ctx3.newPage();
+    const err3 = [];
+    p3.on('pageerror', (e) => err3.push(String((e && e.message) || e)));
+    await p3.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
+    await p3.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    const restored = await p3.evaluate(() => ({
+      speed: document.getElementById('opt-speed').value,
+      cam: document.getElementById('opt-cam').value,
+      lang: document.getElementById('opt-lang').value,
+      tick: window.__game.tickMs,
+    }));
+    check(
+      'edge: unknown saved select values fall back to a real option',
+      !!restored.speed && !!restored.cam && !!restored.lang,
+      JSON.stringify(restored)
+    );
+    check('edge: unknown saved values cause no errors', err3.length === 0, err3.slice(0, 2).join(' | '));
+    await ctx3.close();
+
+    // 16. erase progress really clears every saved key and restores defaults
+    const ctx4 = await browser.newContext();
+    await ctx4.addInitScript(() => {
+      localStorage.setItem('snake3d.best', '999');
+      localStorage.setItem(
+        'snake3d.life',
+        JSON.stringify({ v: 1, games: 42, foods: 420, bestCombo: 5, bestLevel: 7, wins: 2, prestige: 3 })
+      );
+      localStorage.setItem('snake3d.ach', JSON.stringify(['bite', 'win']));
+      localStorage.setItem('snake3d.settings', JSON.stringify({ 'opt-speed': 'fast' }));
+      localStorage.setItem('snake3d.seen', '1');
+    });
+    const p4 = await ctx4.newPage();
+    const err4 = [];
+    p4.on('pageerror', (e) => err4.push(String((e && e.message) || e)));
+    await p4.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
+    await p4.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    const preErase = await p4.evaluate(() => ({
+      best: window.__game.best,
+      life: window.__game.life,
+      ach: window.__game.ach.length,
+      eraseVisible: !document.getElementById('erase-row').hidden,
+      eraseLabel: document.getElementById('btn-erase').textContent.trim(),
+    }));
+    check(
+      'edge: saved progress loaded before erase',
+      preErase.best === 999 && preErase.life.games === 42 && preErase.ach === 2,
+      JSON.stringify(preErase)
+    );
+    check('edge: erase row offered once there is progress', preErase.eraseVisible === true);
+    // two taps: the first only arms
+    await p4.locator('#btn-erase').click();
+    const armed = await p4.evaluate(() => ({
+      label: document.getElementById('btn-erase').textContent.trim(),
+      best: window.__game.best,
+    }));
+    check(
+      'edge: first tap only arms the erase (nothing lost yet)',
+      armed.best === 999 && armed.label !== preErase.eraseLabel,
+      JSON.stringify({ ...armed, defaultLabel: preErase.eraseLabel })
+    );
+    await p4.locator('#btn-erase').click();
+    await p4.waitForTimeout(200);
+    const postErase = await p4.evaluate(() => ({
+      best: window.__game.best,
+      life: window.__game.life,
+      ach: window.__game.ach.length,
+      keys: Object.keys(localStorage).filter((k) => k.indexOf('snake3d.') === 0),
+    }));
+    check(
+      'edge: second tap wipes stats, achievements and every saved key',
+      postErase.best === 0 &&
+        postErase.life.games === 0 &&
+        postErase.life.prestige === 0 &&
+        postErase.ach === 0 &&
+        postErase.keys.length === 0,
+      JSON.stringify(postErase)
+    );
+    check('edge: erase causes no errors', err4.length === 0, err4.slice(0, 2).join(' | '));
+    await ctx4.close();
   } finally {
     await browser.close();
     server.close();
