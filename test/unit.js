@@ -58,6 +58,19 @@ eq(L.bankValue(6, 5, 1), 180, 'bank x6');
 eq(L.bankValue(10, 5, 1), 500, 'bank x10');
 eq(L.bankValue(5, 5, 2), 250, 'prestige doubles the bank');
 eq(L.bankValue(9, 5, 1) < L.bankValue(10, 5, 1), true, 'banking later always pays more');
+// speed-aware combo base: same number of moves of grace at any speed
+eq(L.comboBaseFor(120), 4800, 'normal tick -> 40x moves of grace');
+eq(L.comboBaseFor(90), 3600, 'faster snake -> proportionally smaller window');
+eq(L.comboBaseFor(160), 6400, 'slower snake -> proportionally larger window');
+eq(L.comboBaseFor(55), 2200, 'shortest grace scales down but stays above floor');
+eq(L.comboBaseFor(1100), 44000, 'very slow snake base grows');
+eq(L.comboBaseFor(120) <= L.comboWindow(5000, 1), true, 'base is the full window at step 1');
+// bank danger factor: threats raise the cash-out value
+eq(L.bankValue(6, 5, 1, 0), 180, 'no threats -> old value holds');
+eq(L.bankValue(6, 5, 1, 2), 270, '2 threats -> +50% bank');
+eq(L.bankValue(6, 5, 1, 5), 405, '5 threats -> +125% bank, capped');
+eq(L.bankValue(6, 5, 1, 99), 405, 'threat factor capped at 5');
+eq(L.bankValue(6, 5, 1, -3), 180, 'negative threats ignored');
 // daily: same day -> same seed, different days -> different seeds
 eq(L.dailySeed(20000) === L.dailySeed(20000), true, 'daily seed is deterministic');
 eq(L.dailySeed(20000) === L.dailySeed(20001), false, 'consecutive days differ');

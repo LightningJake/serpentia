@@ -2113,6 +2113,65 @@ async function newPage(browser, blockCDN) {
         (lostTxt || '').slice(0, 70)
       );
 
+      // --- 2b: speed-aware combo base ---
+      const comboBase = await pL.evaluate(() => window.__game.comboBase);
+      check(
+        'ladder: combo base is the speed-scaled window (>= floor)',
+        Number.isFinite(comboBase) && comboBase >= 1100,
+        String(comboBase)
+      );
+      const bankP = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.reset();
+        g2.start();
+        g2.setCombo(6);
+        g2.clearEmbers();
+        const calm = g2.bankValueNow();
+        g2.setEmber(5, 5, 0); // one live telegraph on the board
+        const hot = g2.bankValueNow();
+        return { calm, hot };
+      });
+      check(
+        'bank: calm board keeps old value; an ember raises the cash-out',
+        bankP.calm === 180 && bankP.hot === 225,
+        JSON.stringify(bankP)
+      );
+      const bankDelta = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.pause(); // paused + combo 6 -> bank card visible
+        return document.getElementById('bank-delta').textContent;
+      });
+      check(
+        'bank: pause card shows the gain from one more chained food',
+        /Next chain/.test(bankDelta || '') && /\+\d+/.test(bankDelta || ''),
+        bankDelta
+      );
+
+      // --- 2c: daily teaser + desert countdown ---
+      const teaser = await pL.locator('#daily-teaser').textContent();
+      check(
+        'daily: the menu always teases today\u2019s twist',
+        /twist|reto|d\u00e9fi|Wendung/i.test(teaser || ''),
+        (teaser || '').slice(0, 50)
+      );
+      const desert = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.reset();
+        g2.start();
+        g2.setTheme(1); // Desert (reset() would otherwise restore the start theme)
+        const fresh = g2.desertRemaining();
+        g2.ageFood(16000); // leave ~4s before the food withers
+        return { fresh, low: g2.desertRemaining() };
+      });
+      check(
+        'desert: food wither countdown is queryable and shrinks with age',
+        Number.isFinite(desert.fresh) &&
+          desert.fresh > 10000 &&
+          desert.low < 5000 &&
+          desert.low < desert.fresh,
+        JSON.stringify(desert)
+      );
+
       // --- 3: orb pacing ---
       const caps = await pL.evaluate(() => {
         const out = [];

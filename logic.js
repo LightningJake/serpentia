@@ -45,6 +45,14 @@
     // tests, and a float window is never what anyone wants to read
     return Math.max(COMBO_MIN_WINDOW, Math.round(base * Math.pow(COMBO_STEP, combo - 1)));
   }
+  // Base window scales with the live tick so a chain is always the same
+  // number of MOVES of grace at any speed: fast play gets a proportionally
+  // smaller wall-clock allowance, slow play a larger one. Equal-ish at the
+  // old fixed COMBO_WINDOW when played at the default preset.
+  function comboBaseFor(tickMs) {
+    if (!tickMs || tickMs <= 0) return COMBO_MIN_WINDOW;
+    return Math.max(COMBO_MIN_WINDOW, Math.round(tickMs * 40));
+  }
   // Chained eats raise the combo; `window` is the next step's allowance, which
   // the caller can surface so the shrinking risk is visible rather than secret.
   function comboFor(combo, lastAt, now, win) {
@@ -58,11 +66,14 @@
   // purpose - holding for a bigger chain always pays strictly more than banking
   // early, but so does the per-food value of simply keeping eating, so "bank
   // now" is always the safe-and-worse option. That gap is the whole decision.
-  function bankValue(combo, unit, mult) {
+  // `threats` = live hazards on the board (embers + fresh obstacle pulses), so
+  // banking takes a bigger slice of the run when the board is dangerous.
+  function bankValue(combo, unit, mult, threats) {
     if (!combo || combo < 1) return 0;
     unit = unit == null ? 5 : unit;
     mult = mult == null ? 1 : mult;
-    return Math.round(unit * combo * combo * mult);
+    threats = threats > 0 ? Math.min(threats, 5) : 0;
+    return Math.round(unit * combo * combo * mult * (1 + 0.25 * threats));
   }
   // Daily challenge seed: same day -> same seed -> same map and same rule for
   // everyone. Days since the Unix epoch, hashed with Knuth's multiplicative
@@ -176,6 +187,7 @@
     levelFor: levelFor,
     comboFor: comboFor,
     comboWindow: comboWindow,
+    comboBaseFor: comboBaseFor,
     bankValue: bankValue,
     dailySeed: dailySeed,
     scoreGain: scoreGain,

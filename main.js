@@ -461,7 +461,7 @@
   // one shrinks every step (SnakeLogic.comboWindow). A long chain is a bet.
   function registerEat() {
     var now = performance.now();
-    var r = SnakeLogic.comboFor(combo, lastEatAt, now, COMBO_WINDOW);
+    var r = SnakeLogic.comboFor(combo, lastEatAt, now, SnakeLogic.comboBaseFor(tickMs));
     combo = r.combo;
     comboWindowMs = r.window;
     lastEatAt = now;
@@ -474,9 +474,17 @@
   function canBank() {
     return combo >= BANK_MIN;
   }
+  // Live hazards that should make a bank pay more: embers plus freshly-spawned
+  // obstacle telegraph pulses. The board is worth more when it is dangerous.
+  function threatCount() {
+    var n = embers.length;
+    var now = performance.now();
+    for (var i = 0; i < warnPulses.length; i++) if (warnPulses[i].until > now) n++;
+    return n;
+  }
   function bankNow() {
     if (!canBank()) return false;
-    var v = SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult());
+    var v = SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult(), threatCount());
     score += v;
     banked += v;
     if (v > (life.bestBank || 0)) life.bestBank = v;
@@ -484,7 +492,7 @@
     saveLife();
     combo = 0;
     lastEatAt = 0;
-    comboWindowMs = COMBO_WINDOW;
+    comboWindowMs = SnakeLogic.comboBaseFor(tickMs);
     unlock('bank5');
     updateHUD();
     toast(t('bank_t', { n: v }));
@@ -795,8 +803,21 @@
           bb,
           t('bank_btn') +
             '  ' +
-            t('bank_btn_val', { n: combo, v: SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult()) })
+            t('bank_btn_val', {
+              n: combo,
+              v: SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult(), threatCount()),
+            })
         );
+    }
+    // Next-chain delta: makes the "bank now vs one more eat" gap legible.
+    var bd = $('bank-delta');
+    if (bd) {
+      bd.hidden = !(state === 'paused' && canBank());
+      if (!bd.hidden) {
+        var now = SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult(), threatCount());
+        var next = SnakeLogic.bankValue(combo + 1, BANK_UNIT, prestigeMult(), threatCount());
+        bd.textContent = t('bank_next', { v: Math.max(0, next - now) });
+      }
     }
     if (state === 'menu' && b) {
       try {
@@ -1495,6 +1516,10 @@
       dn.hidden = !dailyOn;
       if (dailyOn) dn.textContent = t('daily_t', { n: dailyRuleName() });
     }
+    // Teaser: always show today's twist so the daily mode is discoverable even
+    // before the player opts in.
+    var dt = $('daily-teaser');
+    if (dt) dt.textContent = t('daily_teaser', { n: t('daily_rule_' + ruleForDay(todayIndex()).id) });
   }
 
   // ---------- Run modes ----------
@@ -1751,7 +1776,7 @@
     seedGen = null; // fresh deterministic stream for seeded runs
     combo = 0;
     lastEatAt = 0;
-    comboWindowMs = COMBO_WINDOW;
+    comboWindowMs = SnakeLogic.comboBaseFor(tickMs);
     banked = 0;
     lastLostCombo = 0;
     lastBonusFood = 0;
@@ -2168,6 +2193,9 @@
     // recap can name what the crash actually cost - otherwise banking is just a
     // bonus button with no downside and no reason to ever press it.
     lastLostCombo = combo >= BANK_MIN ? combo : 0;
+    var lostPoints = lastLostCombo
+      ? SnakeLogic.bankValue(lastLostCombo, BANK_UNIT, prestigeMult(), threatCount())
+      : 0;
     combo = 0;
     var isBest = score > best && score > 0;
     var nb = Math.max(best, score);
@@ -2191,7 +2219,9 @@
         t('over_t'),
         recap +
           (isBest ? ' ' + t('newbest') : '') +
-          (lastLostCombo ? ' ' + t('bank_lost', { n: lastLostCombo }) : ''),
+          (lastLostCombo
+            ? ' ' + t('bank_lost', { n: lastLostCombo }) + ' ' + t('bank_lost_amt', { v: lostPoints })
+            : ''),
         statsChips(),
         replayOver
       );
@@ -4162,11 +4192,33 @@
       biomeIs('Desert') && DESERT_FOOD_TTL - (now2d - foodBornAt) < 5000
         ? Math.floor(now2d / 125) % 2 === 0
         : true;
+    var desertRemain =
+      biomeIs('Desert') && state === 'playing'
+        ? Math.max(0, DESERT_FOOD_TTL - (now2d - foodBornAt))
+        : Infinity;
+    var desertUrgentRing = desertRemain < 5000;
     if (desertBlink) {
       ctx2d.fillStyle = foodTintCss;
       ctx2d.beginPath();
       ctx2d.arc(ox + (food.x + 0.5) * cell, oy + (food.y + 0.5) * cell, cell * 0.36, 0, 7);
       ctx2d.fill();
+    }
+    // Wither countdown: a shrinking ring around the food shows how long it
+    // has left, so desert food expiries are a dodgeable decision not a
+    // surprise.
+    if (isFinite(desertRemain) && desertRemain < DESERT_FOOD_TTL) {
+      var frac = Math.max(0, desertRemain / DESERT_FOOD_TTL);
+      ctx2d.strokeStyle = desertUrgentRing ? '#ff9f1c' : 'rgba(255,159,28,0.35)';
+      ctx2d.lineWidth = desertUrgentRing ? 2.5 : 1.5;
+      ctx2d.beginPath();
+      ctx2d.arc(
+        ox + (food.x + 0.5) * cell,
+        oy + (food.y + 0.5) * cell,
+        cell * 0.5,
+        -Math.PI / 2,
+        -Math.PI / 2 + frac * Math.PI * 2
+      );
+      ctx2d.stroke();
     }
     for (var dbi = 0; dbi < bonuses.length; dbi++) {
       var db = bonuses[dbi];
@@ -4488,6 +4540,11 @@
     // desert rule: food blinks in its last 5s before withering
     var desertUrgent =
       state === 'playing' && biomeIs('Desert') && DESERT_FOOD_TTL - (now - foodBornAt) < 5000;
+    // The orb dims as it withers so the timer is readable in 3D too.
+    if (foodLight && biomeIs('Desert') && state === 'playing') {
+      var dfrac = Math.max(0, Math.min(1, (DESERT_FOOD_TTL - (now - foodBornAt)) / DESERT_FOOD_TTL));
+      foodLight.intensity = 0.4 + 1.4 * dfrac + (desertUrgent ? Math.abs(Math.sin(t * 8)) * 0.8 : 0);
+    }
     var foodShown = !desertUrgent || Math.floor(t * 8) % 2 === 0;
     foodMesh.visible = foodShown;
     if (foodLight) foodLight.visible = foodShown;
@@ -4898,6 +4955,19 @@
       return bonuses.length;
     },
     pace: paceEntities,
+    get comboBase() {
+      return SnakeLogic.comboBaseFor(tickMs);
+    },
+    bankValueNow: function () {
+      return SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult(), threatCount());
+    },
+    desertRemaining: function () {
+      if (!biomeIs('Desert') || state !== 'playing') return null;
+      return Math.max(0, DESERT_FOOD_TTL - (performance.now() - foodBornAt));
+    },
+    ageFood: function (ms) {
+      foodBornAt = performance.now() - ms;
+    },
     get daily() {
       return {
         on: dailyOn,
