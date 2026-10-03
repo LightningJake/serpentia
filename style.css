@@ -467,6 +467,25 @@ body {
   justify-content: center;
   margin: 16px 0 8px;
 }
+/* Touch targets on the run-state card: a paused player taps these one-handed
+   between ticks, so every button gets a 48px floor and the rows get air. */
+#pause-menu .btn,
+#play-row .btn,
+#erase-row .btn,
+#help-modal .btn {
+  min-height: 48px;
+  padding: 12px 18px;
+  font-size: 15px;
+}
+#pause-menu,
+#play-row,
+#share-row,
+#prestige-row,
+#install-row,
+#erase-row {
+  gap: 12px;
+  margin: 18px 0 10px;
+}
 .hint {
   font-size: 12px;
   line-height: 1.7;

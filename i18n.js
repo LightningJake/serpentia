@@ -21,6 +21,10 @@
       btn_menu: 'Menu',
       btn_share: '📤 Share score',
       btn_gotit: 'Got it',
+      btn_back: '\u2190 Back',
+      menu_howto: 'Eat orbs, avoid walls and your own tail. Pause to bank a hot streak before it breaks.',
+      recap_bank_hint:
+        'No streak cashed out yet \u2014 chain five foods and pause to bank it before it breaks.',
       btn_play: '▶ Start game',
       btn_again: '↻ Play again',
       mode_classic: 'Classic',
@@ -235,6 +239,10 @@
       btn_menu: 'Menú',
       btn_share: '📤 Compartir',
       btn_gotit: 'Entendido',
+      btn_back: '\u2190 Atr\u00e1s',
+      menu_howto: 'Come orbes, evita paredes y tu cola. Pausa para asegurar una racha antes de que se rompa.',
+      recap_bank_hint:
+        'A\u00fan no aseguraste una racha \u2014 encadena cinco comidas y pausa para cobrarla.',
       btn_play: '▶ Jugar',
       btn_again: '↻ Otra vez',
       mode_classic: 'Clásico',
@@ -449,6 +457,11 @@
       btn_menu: 'Menu',
       btn_share: '📤 Partager',
       btn_gotit: 'Compris',
+      btn_back: '\u2190 Retour',
+      menu_howto:
+        "Mange les orbes, \u00e9vite les murs et ta queue. Pause pour s\u00e9curiser une s\u00e9rie avant qu'elle ne casse.",
+      recap_bank_hint:
+        'Aucune s\u00e9rie encaiss\u00e9e \u2014 encha\u00eene cinq repas et mets en pause pour la banque.',
       btn_play: '▶ Jouer',
       btn_again: '↻ Rejouer',
       mode_classic: 'Classique',
@@ -663,6 +676,10 @@
       btn_menu: 'Menü',
       btn_share: '📤 Teilen',
       btn_gotit: 'Verstanden',
+      btn_back: '\u2190 Zur\u00fcck',
+      menu_howto:
+        'Iss Orbs, weiche W\u00e4nden und deinem Schwanz aus. Pause zum Banken einer heißen Kette, bevor sie reißt.',
+      recap_bank_hint: 'Noch keine Kette gesichert \u2014 kette f\u00fcnf Essen und pausiere zum Banken.',
       btn_play: '▶ Spielen',
       btn_again: '↻ Nochmal',
       mode_classic: 'Klassik',

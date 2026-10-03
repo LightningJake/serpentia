@@ -746,10 +746,15 @@
     );
   }
   // DOM text writer: skips no-op writes so aria-live regions are not spammed
+  // and the HUD does not churn on every tick when nothing changed.
+  var hudWrites = 0;
   function setText(el, v) {
     if (!el) return;
     var s = String(v);
-    if (el.textContent !== s) el.textContent = s;
+    if (el.textContent !== s) {
+      el.textContent = s;
+      hudWrites++; // observable no-op-write guard for the perf suite
+    }
   }
   function setState(s) {
     state = s;
@@ -764,6 +769,13 @@
     ovTitle.textContent = title;
     ovSub.textContent = sub;
     ovStats.innerHTML = statsHTML || '';
+    var oh = $('ov-hint');
+    if (oh) {
+      // Recap without a bank tells the player what they missed; otherwise stay quiet.
+      var quietRun = state === 'over' && banked === 0 && combo < BANK_MIN;
+      oh.hidden = !quietRun;
+      if (quietRun) oh.textContent = t('recap_bank_hint');
+    }
     var ob = $('ov-best');
     if (ob) ob.textContent = best;
     var ll = $('life-line');
@@ -1693,7 +1705,12 @@
     }
     try {
       var stepDur = 60 / musicTheme().bpm / 2;
-      while (nextNoteT < ctx.currentTime + 0.28) {
+      // If we fell behind (tab throttled, long GC), don't burst the missing
+      // notes as a stutter: drop to "now" and cap how many notes we emit in
+      // one scheduler tick so audio never spirals into a catch-up wail.
+      if (nextNoteT < ctx.currentTime - 0.5) nextNoteT = ctx.currentTime + 0.02;
+      var n = 0;
+      while (nextNoteT < ctx.currentTime + 0.28 && n++ < 6) {
         playMusicStep(musicStep, nextNoteT, stepDur);
         nextNoteT += stepDur;
         musicStep++;
@@ -2463,6 +2480,7 @@
   }
   onTap($('btn-help'), openHelp);
   onTap($('btn-close-help'), closeHelp);
+  onTap($('btn-back-help'), closeHelp);
   onTap($('btn-resume'), function () {
     if (state === 'paused') togglePause();
   });
@@ -4122,16 +4140,14 @@
     view2d.oy = oy;
     view2d.cell = cell;
     ctx2d.strokeStyle = 'rgba(90,162,255,.25)';
+    ctx2d.beginPath();
     for (var i = 0; i <= GRID; i++) {
-      ctx2d.beginPath();
       ctx2d.moveTo(ox + i * cell, oy);
       ctx2d.lineTo(ox + i * cell, oy + GRID * cell);
-      ctx2d.stroke();
-      ctx2d.beginPath();
       ctx2d.moveTo(ox, oy + i * cell);
       ctx2d.lineTo(ox + GRID * cell, oy + i * cell);
-      ctx2d.stroke();
     }
+    ctx2d.stroke();
     var ob;
     // subtle checkerboard ground tint so the fallback has texture too
     ctx2d.fillStyle = 'rgba(255,255,255,0.03)';
@@ -4827,6 +4843,9 @@
     },
     get tickMs() {
       return tickMs;
+    },
+    get hudWrites() {
+      return hudWrites;
     },
     // First live orb, kept for the existing single-orb tests; `bonuses` is the
     // real state now that several can coexist.

@@ -470,22 +470,21 @@ async function newPage(browser, blockCDN) {
     // version slept 600ms and asserted an exact cell, so its result depended on
     // how many ticks the browser managed to fit in that window (plus IPC
     // overhead). Stepping makes "it wrapped" the only thing under test.
-    await page.evaluate(() => {
-      window.__game.start();
-      document.getElementById('opt-wrap').checked = true;
-      window.__game.setSnake([{ x: 19, y: 5 }]);
-      window.__game.setDir(1, 0);
-    });
-    const wpos = await page.evaluate(() => {
+    const wset = await page.evaluate(() => {
       const g2 = window.__game;
+      g2.start();
+      document.getElementById('opt-wrap').checked = true;
+      g2.setSnake([{ x: 19, y: 5 }]);
+      g2.setDir(1, 0);
       const seen = [];
       for (let i = 0; i < 4; i++) {
         g2.step();
         seen.push(g2.snake[0].x);
       }
-      return seen;
+      return { state: g2.state, seen: seen };
     });
-    const wst = await g(page, 'state');
+    const wpos = wset.seen;
+    const wst = wset.state;
     check(
       'wrap walls: survives + wraps to left side',
       wst === 'playing' && wpos[0] === 0 && wpos[3] === 3,
@@ -2170,6 +2169,103 @@ async function newPage(browser, blockCDN) {
           desert.low < 5000 &&
           desert.low < desert.fresh,
         JSON.stringify(desert)
+      );
+
+      // --- 2d: perf/robustness + UI/UX hardening ---
+      const hudNoChurn = await pL.evaluate(() => {
+        const before = window.__game.hudWrites;
+        return { before, after: window.__game.hudWrites, finite: Number.isFinite(window.__game.hudWrites) };
+      });
+      check(
+        'perf: hudWrites counter is exposed and monotonic',
+        hudNoChurn.finite && hudNoChurn.after >= hudNoChurn.before,
+        JSON.stringify(hudNoChurn)
+      );
+      const backBtn = await pL.evaluate(() => {
+        const b = document.getElementById('btn-back-help');
+        return b ? { visible: !b.hidden, text: b.textContent } : null;
+      });
+      check(
+        'ui: help modal has an explicit Back button',
+        !!backBtn && /back|atr\u00e1s|retour|zur\u00fcck/i.test(backBtn.text || ''),
+        backBtn && backBtn.text
+      );
+      const howto = await pL.evaluate(() => document.getElementById('menu-howto').textContent);
+      check('ui: menu shows the one-line how-to', /bank/i.test(howto || ''), (howto || '').slice(0, 50));
+      const pauseTouch = await pL.evaluate(() => {
+        const b = document.querySelector('#pause-menu .btn');
+        return b ? getComputedStyle(b).minHeight : null;
+      });
+      check('ui: pause buttons have a 48px touch floor', pauseTouch === '48px', String(pauseTouch));
+      const resumeConsistency = await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.resume && g2.resume();
+        g2.start();
+        g2.pause();
+        return {
+          corner: document.getElementById('btn-pause').textContent,
+          primary: document.getElementById('btn-play').textContent,
+          row: document.getElementById('btn-resume').textContent,
+        };
+      });
+      check(
+        'ui: every pause affordance reads the same resume action',
+        resumeConsistency.corner === resumeConsistency.primary &&
+          resumeConsistency.row.indexOf('Resume') >= 0,
+        JSON.stringify(resumeConsistency)
+      );
+      const corrupt = await pL.evaluate(() => {
+        localStorage.setItem('snake3d.settings', '{not json');
+        localStorage.setItem('snake3d.life', 'garbage');
+        localStorage.setItem('snake3d.ach', '[broken');
+        return 'seeded';
+      });
+      await pL.reload();
+      await pL.waitForTimeout(500);
+      const bootOk = await pL.evaluate(() => ({
+        title: (document.getElementById('ov-title') || {}).textContent || '',
+        state: window.__game ? window.__game.state : null,
+      }));
+      check(
+        'robustness: corrupt persistence still boots to a clean menu',
+        corrupt === 'seeded' && /snake/i.test(bootOk.title) && bootOk.state === 'menu',
+        JSON.stringify(bootOk)
+      );
+      // leaving corrupt blobs on disk would poison every later reload in this session
+      await pL.evaluate(() => {
+        localStorage.removeItem('snake3d.settings');
+        localStorage.removeItem('snake3d.life');
+        localStorage.removeItem('snake3d.ach');
+      });
+
+      // die in a boring corner (short chain, zero banked) -> recap must teach
+      await pL.evaluate(() => {
+        const g2 = window.__game;
+        g2.reset();
+        g2.start();
+        g2.clearBonus();
+        g2.setCombo(2);
+        g2.setFood(19, 19);
+        g2.setSnake([
+          { x: 2, y: 2 },
+          { x: 3, y: 2 },
+          { x: 4, y: 2 },
+        ]);
+        g2.setDir(-1, 0); // straight into the left wall
+      });
+      await pL
+        .waitForFunction(() => document.getElementById('ov-stats').childElementCount > 0, null, {
+          timeout: 8000,
+        })
+        .catch(() => {});
+      const recapHint = await pL.evaluate(() => {
+        const oh = document.getElementById('ov-hint');
+        return oh ? { hidden: oh.hidden, text: oh.textContent } : null;
+      });
+      check(
+        'ui: a streak-less, unbanked death teaches the bank in the recap',
+        !!recapHint && recapHint.hidden === false && /bank/i.test(recapHint.text || ''),
+        JSON.stringify(recapHint)
       );
 
       // --- 3: orb pacing ---

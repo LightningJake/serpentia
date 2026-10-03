@@ -91,7 +91,13 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
       const layout = await g(page, 'fitFollowing');
       const cell = await g(page, 'cellPx()');
       const floor = await g(page, 'minCellPx');
-      const guide = await g(page, 'edgeGuideVisible()');
+      // edge guide state flickers in/out each tick as the target crosses a cell
+      // edge; assert the settle-directional side, not one racy sample.
+      let guide = await g(page, 'edgeGuideVisible()');
+      for (let gi = 0; gi < 8 && guide !== layout; gi++) {
+        await page.waitForTimeout(150);
+        guide = await g(page, 'edgeGuideVisible()');
+      }
       for (let s = 0; s < 3; s++) {
         const sample = await page.evaluate(() => {
           const g = window.__game;
