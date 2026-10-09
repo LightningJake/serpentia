@@ -111,6 +111,8 @@
   var level = 1; // 1 + floor(foodsEaten / FOODS_PER_LEVEL)
   var runStartAt = 0,
     longest = 3; // run stats
+  var runKey = 'classic-normal'; // mode+speed this run started with (see modeKey)
+  var baseScore = 0; // same run, prestige excluded (daily records use it)
   var squash = 0; // eat squash-and-stretch impulse 0..1
   var foodBornAt = 0,
     shieldBornAt = 0; // spawn-pulse timestamps (bonuses carry their own per-orb)
@@ -150,6 +152,8 @@
   // whole point of the button.
   var SAVE_KEYS = [
     'snake3d.best',
+    'snake3d.bests',
+    'snake3d.daily',
     'snake3d.life',
     'snake3d.ach',
     'snake3d.settings',
@@ -157,6 +161,105 @@
     'snake3d.seenKeys',
   ];
   best = Number(store.get('snake3d.best') || 0) || 0;
+
+  // ---------- Records ----------
+  // One shared best was a broken leaderboard: a Maze run and a Kid-mode run
+  // wrote the same number, so the "best" on the card was whichever mode the
+  // player happened to die in last. Records are now keyed by mode+speed, and
+  // the overall best is kept alongside them (and migrated as "overall") so
+  // nobody loses a number they already own.
+  var bests = {}; // 'maze-fast' -> score
+  var dailyRec = { day: 0, best: 0, base: 0 };
+  var dailyStreak = { last: 0, cur: 0, long: 0 };
+  function numOr(v, d) {
+    var n = Number(v);
+    return isFinite(n) && n >= 0 ? n : d;
+  }
+  function loadBests() {
+    try {
+      var o = JSON.parse(store.get('snake3d.bests') || 'null');
+      if (o && typeof o === 'object' && !Array.isArray(o)) {
+        for (var k in o) if (/^[a-z]+-[a-z]+$/.test(k)) bests[k] = numOr(o[k], 0);
+      }
+    } catch (e) {
+      bests = {};
+    }
+    try {
+      var d = JSON.parse(store.get('snake3d.daily') || 'null');
+      if (d && typeof d === 'object') {
+        if (d.rec && typeof d.rec === 'object')
+          dailyRec = {
+            day: numOr(d.rec.day, 0),
+            best: numOr(d.rec.best, 0),
+            base: numOr(d.rec.base, 0),
+          };
+        if (d.streak && typeof d.streak === 'object')
+          dailyStreak = {
+            last: numOr(d.streak.last, 0),
+            cur: numOr(d.streak.cur, 0),
+            long: numOr(d.streak.long, 0),
+          };
+      }
+    } catch (e) {}
+  }
+  function saveBests() {
+    try {
+      store.set('snake3d.bests', JSON.stringify(bests));
+      store.set('snake3d.daily', JSON.stringify({ rec: dailyRec, streak: dailyStreak }));
+    } catch (e) {}
+  }
+  // The mode+speed identity of a run. Read from the live controls and snapshotted
+  // at reset() so changing a dropdown mid-run cannot rewrite history.
+  function modeKey() {
+    var m = 'classic';
+    if (mazeOn()) m = 'maze';
+    else if ($('opt-obstacles') && $('opt-obstacles').checked) m = 'obstacles';
+    else if ($('opt-wrap') && $('opt-wrap').checked) m = 'wrap';
+    var s = $('opt-speed') ? $('opt-speed').value : 'normal';
+    return m + '-' + (SPEED_PRESETS[s] ? s : 'normal');
+  }
+  function keyLabel(k) {
+    var parts = String(k || '').split('-');
+    var m = t('mode_' + (parts[0] || 'classic'));
+    var s = t('set_' + (parts[1] || 'normal'));
+    return m + ' · ' + s;
+  }
+  // Single owner of "was that a record": overall, per mode+speed, and the daily
+  // challenge. Called from die(), win() AND from every path that throws a live
+  // run away (restart, quit, prestige) - those used to discard the score
+  // silently, which is how a 400-point run could vanish with no best saved.
+  function recordBest() {
+    var isBest = score > best && score > 0;
+    if (isBest) {
+      best = score;
+      store.set('snake3d.best', String(best));
+    }
+    var k = runKey || modeKey();
+    if (score > 0 && score > (bests[k] || 0)) {
+      bests[k] = score;
+      saveBests();
+    }
+    // The daily is scored WITHOUT prestige so two players on the same seed are
+    // comparable - a veteran's +40% must not beat a newcomer's better run.
+    if (dailyOn && score > 0) {
+      var day = dailyDay == null ? todayIndex() : dailyDay;
+      if (dailyRec.day !== day) dailyRec = { day: day, best: 0, base: 0 };
+      var base = Math.round(baseScore);
+      if (score > dailyRec.best) dailyRec.best = score;
+      if (base > dailyRec.base) dailyRec.base = base;
+      var today = todayIndex();
+      if (dailyStreak.last !== today) {
+        // one UTC day at a time: yesterday's daily keeps the streak alive,
+        // anything older restarts it
+        dailyStreak.cur = dailyStreak.last === today - 1 ? dailyStreak.cur + 1 : 1;
+        dailyStreak.last = today;
+        if (dailyStreak.cur > dailyStreak.long) dailyStreak.long = dailyStreak.cur;
+      }
+      saveBests();
+    }
+    return isBest;
+  }
+  loadBests();
 
   // ---------- i18n ----------
   var LANGS = ['en', 'es', 'fr', 'de'];
@@ -280,6 +383,9 @@
   function eraseProgress() {
     for (var i = 0; i < SAVE_KEYS.length; i++) store.remove(SAVE_KEYS[i]);
     best = 0;
+    bests = {};
+    dailyRec = { day: 0, best: 0, base: 0 };
+    dailyStreak = { last: 0, cur: 0, long: 0 };
     life = {
       games: 0,
       foods: 0,
@@ -325,12 +431,26 @@
     if (life.prestige > 0) s += ' • ⭐+' + life.prestige * 10 + '%';
     return s;
   }
+  // Records row under the lifetime line on the menu card: the overall best, the
+  // best for whatever mode+speed is currently selected (so the player can see
+  // the number they are about to chase), and the daily best + streak.
+  function recordsLine() {
+    var parts = ['🏆 ' + t('st_best') + ' ' + best];
+    var k = modeKey();
+    if (bests[k] > 0) parts.push(t('st_mode_best', { m: keyLabel(k) }) + ' ' + bests[k]);
+    if (dailyRec.base > 0) parts.push(t('st_daily_best') + ' ' + dailyRec.base);
+    if (dailyStreak.cur > 0) parts.push(t('st_daily_streak') + ' ' + dailyStreak.cur);
+    return parts.join(' • ');
+  }
   // Endless framing: prestige restarts the run with a permanent +10%/level bonus.
   function prestigeMult() {
     return 1 + 0.1 * (life.prestige || 0);
   }
   function doPrestige() {
     if (state !== 'over' && state !== 'win') return;
+    // die()/win() already filed this run; the guard keeps the daily and
+    // mode records honest if prestige is somehow reached from elsewhere.
+    if (score > 0) recordBest();
     life.prestige = (life.prestige || 0) + 1;
     saveLife();
     say(t('prestige_toast'));
@@ -474,6 +594,17 @@
   function canBank() {
     return combo >= BANK_MIN;
   }
+  // Every point in the game flows through here, so the prestige multiplier is
+  // applied in exactly one place. `baseScore` keeps the same run WITHOUT the
+  // multiplier: the daily challenge is scored on that number, otherwise a
+  // veteran's permanent +10%/prestige would make the daily leaderboard a
+  // function of how long someone has played rather than how well they played.
+  function addScore(base, mult) {
+    var gained = Math.round(base * (mult || 1) * prestigeMult());
+    score += gained;
+    baseScore += Math.round(base * (mult || 1));
+    return gained;
+  }
   // Live hazards that should make a bank pay more: embers plus freshly-spawned
   // obstacle telegraph pulses. The board is worth more when it is dangerous.
   function threatCount() {
@@ -484,8 +615,9 @@
   }
   function bankNow() {
     if (!canBank()) return false;
-    var v = SnakeLogic.bankValue(combo, BANK_UNIT, prestigeMult(), threatCount());
-    score += v;
+    // bankValue(.., 1, ..) = the prestige-free chunk; addScore applies the
+    // multiplier once, so the daily's base score stays consistent.
+    var v = addScore(SnakeLogic.bankValue(combo, BANK_UNIT, 1, threatCount()), 1);
     banked += v;
     if (v > (life.bestBank || 0)) life.bestBank = v;
     if (combo > life.bestCombo) life.bestCombo = combo;
@@ -780,6 +912,8 @@
     if (ob) ob.textContent = best;
     var ll = $('life-line');
     if (ll) ll.textContent = state === 'menu' ? lifeLine() : '';
+    var rl = $('rec-line');
+    if (rl) rl.textContent = state === 'menu' ? recordsLine() : '';
     var b = $('btn-play');
     if (b) {
       b.textContent =
@@ -853,6 +987,7 @@
   }
   function quitToMenu() {
     stopMusic();
+    recordBest(); // a run thrown away is still a run that happened
     reset();
     setState('menu');
     showMenuOv();
@@ -1088,6 +1223,14 @@
       chip(t('st_rate'), rate) +
       chip(t('st_longest'), longest);
     if (seedNum != null) chips += chip(t('st_seed'), seedNum);
+    // the record this run was chasing, named instead of just a number: the
+    // shared best told a Maze player nothing about their Maze best
+    chips += chip(t('st_mode_best', { m: keyLabel(runKey) }), bests[runKey] || 0);
+    if (dailyOn) {
+      chips += chip(t('st_daily_today'), Math.round(baseScore));
+      chips += chip(t('st_daily_best'), dailyRec.day === dailyDay ? dailyRec.base : 0);
+      chips += chip(t('st_daily_streak'), dailyStreak.cur);
+    }
     return chips;
   }
   // Center-screen milestone banner (level-ups, max combo)
@@ -1773,6 +1916,8 @@
     dir = { x: 1, y: 0 };
     queue = [];
     score = 0;
+    baseScore = 0;
+    runKey = modeKey(); // records are filed against the run's own settings
     foodsEaten = 0;
     level = 1;
     longest = 3;
@@ -2092,8 +2237,7 @@
     if (snake.length > longest) longest = snake.length;
     if (willEatBonus) {
       var multB = registerEat();
-      var gainedB = Math.round(50 * multB * prestigeMult());
-      score += gainedB;
+      var gainedB = addScore(50, multB);
       // A bonus orb grows the snake just like a regular food (willGrow covers
       // both), so it counts toward the level goal too. It used to bump only
       // life.foods, which left the "FOODS n/6" pill under-reporting real
@@ -2130,8 +2274,7 @@
       }
     } else if (willEat) {
       var mult = registerEat();
-      var gained = Math.round(10 * mult * prestigeMult());
-      score += gained;
+      var gained = addScore(10, mult);
       foodsEaten++;
       life.foods++;
       if (combo > life.bestCombo) life.bestCombo = combo;
@@ -2214,12 +2357,9 @@
       ? SnakeLogic.bankValue(lastLostCombo, BANK_UNIT, prestigeMult(), threatCount())
       : 0;
     combo = 0;
-    var isBest = score > best && score > 0;
-    var nb = Math.max(best, score);
-    if (nb !== best) {
-      best = nb;
-      store.set('snake3d.best', String(best));
-    }
+    // Records are owned by recordBest() so every exit path (death, win,
+    // restart, quit, prestige) files the same numbers.
+    var isBest = recordBest();
     saveLife();
     buzz([60, 40, 60]);
     updateHUD();
@@ -2257,8 +2397,7 @@
     state = 'win';
     sfx.win();
     stopMusic();
-    best = Math.max(best, score);
-    store.set('snake3d.best', String(best));
+    recordBest();
     life.wins++;
     unlock('win');
     saveLife();
@@ -2388,20 +2527,98 @@
     mDownY = 0,
     mDownT = 0,
     mDownBtn = 0;
-  canvas.addEventListener('pointerdown', function (e) {
-    if (e.pointerType === 'touch') return;
-    mDownX = e.clientX;
-    mDownY = e.clientY;
-    mDownT = performance.now();
-    mDownBtn = e.button;
-  });
-  canvas.addEventListener('pointerup', function (e) {
-    if (e.pointerType === 'touch' || mDownBtn !== 0) return;
-    var moved = Math.sqrt(
-      (e.clientX - mDownX) * (e.clientX - mDownX) + (e.clientY - mDownY) * (e.clientY - mDownY)
+  // Touch: single-finger swipe steers, two-finger drag orbits + pinches zoom
+  var tsX = 0,
+    tsY = 0,
+    tsT = 0,
+    multiTouch = false;
+  var pinchD = 0,
+    pinchMX = 0,
+    pinchMY = 0;
+  // All steering gestures live on the <canvas> element. The element is normally
+  // fixed for the page lifetime, but a half-failed WebGL init (see init2D) or a
+  // permanently lost GPU context replaces it - and handlers bound to the old
+  // node go with it, which would leave a 2D board nobody can steer. So the
+  // bindings are a function and are replayed onto whatever canvas is current.
+  function bindCanvasInput() {
+    canvas.addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'touch') return;
+      mDownX = e.clientX;
+      mDownY = e.clientY;
+      mDownT = performance.now();
+      mDownBtn = e.button;
+    });
+    canvas.addEventListener('pointerup', function (e) {
+      if (e.pointerType === 'touch' || mDownBtn !== 0) return;
+      var moved = Math.sqrt(
+        (e.clientX - mDownX) * (e.clientX - mDownX) + (e.clientY - mDownY) * (e.clientY - mDownY)
+      );
+      if (performance.now() - mDownT < 350 && moved < 8) steerToward(e.clientX, e.clientY);
+    });
+    canvas.addEventListener(
+      'touchstart',
+      function (e) {
+        multiTouch = e.touches.length > 1;
+        if (!multiTouch) pinchD = 0;
+        var t = e.changedTouches[0];
+        tsX = t.clientX;
+        tsY = t.clientY;
+        tsT = performance.now();
+      },
+      { passive: true }
     );
-    if (performance.now() - mDownT < 350 && moved < 8) steerToward(e.clientX, e.clientY);
-  });
+    canvas.addEventListener(
+      'touchmove',
+      function (e) {
+        if (e.touches.length !== 2) return;
+        var a = e.touches[0],
+          b = e.touches[1];
+        var mx = (a.clientX + b.clientX) / 2,
+          my = (a.clientY + b.clientY) / 2;
+        var d = Math.sqrt(
+          (a.clientX - b.clientX) * (a.clientX - b.clientX) +
+            (a.clientY - b.clientY) * (a.clientY - b.clientY)
+        );
+        if (pinchD > 0) {
+          theta -= (mx - pinchMX) * 0.008;
+          phi -= (my - pinchMY) * 0.007;
+          phi = Math.max(0.35, Math.min(1.25, phi));
+          applyFit(); // keep the board framed at the new orbit angle
+          setRadiusHold(radius - (d - pinchD) * 0.05);
+        }
+        pinchMX = mx;
+        pinchMY = my;
+        pinchD = d;
+      },
+      { passive: true }
+    );
+    canvas.addEventListener(
+      'touchend',
+      function (e) {
+        if (e.touches.length < 2) pinchD = 0;
+        if (multiTouch) return; // two fingers = camera gesture, never steer
+        var t = e.changedTouches[0];
+        var dx = t.clientX - tsX,
+          dy = t.clientY - tsY,
+          dt = performance.now() - tsT;
+        var sel = $('opt-swipe');
+        var thresh = (sel && SWIPE_PX[sel.value]) || 24;
+        var dist = Math.sqrt(dx * dx + dy * dy);
+        if (dt < 350 && dist > thresh) {
+          if (e.cancelable) e.preventDefault();
+          audio();
+          if (Math.abs(dx) > Math.abs(dy)) viewSteer(dx > 0 ? 1 : -1, 0);
+          else viewSteer(0, dy > 0 ? 1 : -1);
+        } else if (dt < 350 && dist <= 8) {
+          // tap = "go there": the easiest steering of all
+          audio();
+          steerToward(t.clientX, t.clientY);
+        }
+      },
+      { passive: false }
+    );
+  }
+  bindCanvasInput();
 
   // ---------- UI wiring: attached BEFORE 3D init so Start never dies ----------
   // EDGE: buttons must work for mouse, touch, keyboard, screen readers and
@@ -2443,6 +2660,9 @@
   onTap($('btn-play'), guardedStart);
   onTap($('btn-restart'), function () {
     lastStartAt = 0;
+    // Restart used to reset() straight past the best-save, so a record run
+    // abandoned mid-game vanished with no trace. File it first.
+    recordBest();
     startGame();
   }); // explicit Restart always resets
   onTap($('btn-pause'), function () {
@@ -2486,6 +2706,7 @@
   });
   onTap($('btn-restart2'), function () {
     lastStartAt = 0;
+    recordBest();
     startGame();
   });
   onTap($('btn-quit'), function () {
@@ -2785,78 +3006,12 @@
       if (state === 'paused')
         startGame(); // fresh run, unpaused (reset() alone would strand the pause overlay)
       else if (state !== 'playing') startGame();
-      else reset();
+      else {
+        recordBest(); // mid-run Enter = restart, and a record must survive it
+        reset();
+      }
     }
   });
-  // Touch: single-finger swipe steers, two-finger drag orbits + pinches zoom
-  var tsX = 0,
-    tsY = 0,
-    tsT = 0,
-    multiTouch = false;
-  var pinchD = 0,
-    pinchMX = 0,
-    pinchMY = 0;
-  canvas.addEventListener(
-    'touchstart',
-    function (e) {
-      multiTouch = e.touches.length > 1;
-      if (!multiTouch) pinchD = 0;
-      var t = e.changedTouches[0];
-      tsX = t.clientX;
-      tsY = t.clientY;
-      tsT = performance.now();
-    },
-    { passive: true }
-  );
-  canvas.addEventListener(
-    'touchmove',
-    function (e) {
-      if (e.touches.length !== 2) return;
-      var a = e.touches[0],
-        b = e.touches[1];
-      var mx = (a.clientX + b.clientX) / 2,
-        my = (a.clientY + b.clientY) / 2;
-      var d = Math.sqrt(
-        (a.clientX - b.clientX) * (a.clientX - b.clientX) + (a.clientY - b.clientY) * (a.clientY - b.clientY)
-      );
-      if (pinchD > 0) {
-        theta -= (mx - pinchMX) * 0.008;
-        phi -= (my - pinchMY) * 0.007;
-        phi = Math.max(0.35, Math.min(1.25, phi));
-        applyFit(); // keep the board framed at the new orbit angle
-        setRadiusHold(radius - (d - pinchD) * 0.05);
-      }
-      pinchMX = mx;
-      pinchMY = my;
-      pinchD = d;
-    },
-    { passive: true }
-  );
-  canvas.addEventListener(
-    'touchend',
-    function (e) {
-      if (e.touches.length < 2) pinchD = 0;
-      if (multiTouch) return; // two fingers = camera gesture, never steer
-      var t = e.changedTouches[0];
-      var dx = t.clientX - tsX,
-        dy = t.clientY - tsY,
-        dt = performance.now() - tsT;
-      var sel = $('opt-swipe');
-      var thresh = (sel && SWIPE_PX[sel.value]) || 24;
-      var dist = Math.sqrt(dx * dx + dy * dy);
-      if (dt < 350 && dist > thresh) {
-        if (e.cancelable) e.preventDefault();
-        audio();
-        if (Math.abs(dx) > Math.abs(dy)) viewSteer(dx > 0 ? 1 : -1, 0);
-        else viewSteer(0, dy > 0 ? 1 : -1);
-      } else if (dt < 350 && dist <= 8) {
-        // tap = "go there": the easiest steering of all
-        audio();
-        steerToward(t.clientX, t.clientY);
-      }
-    },
-    { passive: false }
-  );
   document.addEventListener('visibilitychange', function () {
     if (document.hidden && state === 'playing') togglePause();
   });
@@ -3098,7 +3253,7 @@
       return false;
     }
     // RESPONSIVE perf: cap DPR + smaller shadows = big fps win on laptops
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(QUALITY_PR);
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = $('opt-shadows') ? $('opt-shadows').checked : true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -3421,12 +3576,29 @@
       },
       { passive: false }
     );
+    // A lost context that never comes back used to leave the game paused on a
+    // frozen 3D frame forever: the board stopped rendering, but nothing ever
+    // moved the game off the dead renderer. Pause for the restore case, and if
+    // no `webglcontextrestored` arrives shortly after, drop to the 2D fallback
+    // mid-run - the logic is renderer-independent, so the score and the snake
+    // survive the trip.
+    var ctxLostAt = 0;
     canvas.addEventListener('webglcontextlost', function (e) {
       e.preventDefault();
       say(t('gpu_lost'));
       if (state === 'playing') togglePause();
+      if (ctxLostAt) return;
+      ctxLostAt = performance.now();
+      setTimeout(function () {
+        if (ctxLostAt && performance.now() - ctxLostAt >= CTX_RESTORE_GRACE) {
+          ctxLostAt = 0;
+          fallbackTo2D(t('note_2d_render'));
+          say(t('gpu_lost'));
+        }
+      }, CTX_RESTORE_GRACE + 200);
     });
     canvas.addEventListener('webglcontextrestored', function () {
+      ctxLostAt = 0;
       say(t('gpu_back'));
     });
 
@@ -4103,8 +4275,35 @@
     if (parts2d.length > 160) parts2d.splice(0, parts2d.length - 160);
   }
   // ---------- 2D fallback ----------
+  // How long a lost GPU context gets to come back before the run is moved onto
+  // the 2D board. Chrome restores in well under a second; a driver reset or a
+  // blocklisted GPU never does, and waiting forever = a frozen game.
+  var CTX_RESTORE_GRACE = 1500;
+  // A canvas can only ever hand back ONE context type. If initThree got as far
+  // as constructing a WebGLRenderer and then threw, the element still owns a
+  // live WebGL context, so getContext('2d') here returns null and the board
+  // renders nothing at all - a black screen with no error anywhere. Replace the
+  // element instead and re-attach the input handlers bound to the old one.
+  function fresh2DCanvas() {
+    try {
+      if (!canvas || !canvas.getContext) return false;
+      if (canvas.getContext('2d')) return false; // free already: nothing to do
+    } catch (e) {
+      return false;
+    }
+    var nc = document.createElement('canvas');
+    nc.id = canvas.id || 'scene';
+    nc.className = canvas.className;
+    var st = canvas.getAttribute('style');
+    if (st) nc.setAttribute('style', st);
+    if (canvas.parentNode) canvas.parentNode.replaceChild(nc, canvas);
+    canvas = nc;
+    bindCanvasInput(); // the old element took the steering handlers with it
+    return true;
+  }
   function init2D(reason) {
     mode = '2d';
+    fresh2DCanvas();
     try {
       ctx2d = canvas.getContext('2d');
     } catch (e) {
@@ -4119,6 +4318,24 @@
       }, 5000);
     }
     say(reason || t('note_2d_mode'));
+  }
+  // Move a LIVE run off the 3D renderer onto the 2D board without restarting
+  // anything: score, snake, level, combo and settings all belong to the logic,
+  // not the renderer. Used when a lost GPU context never comes back.
+  function fallbackTo2D(reason) {
+    if (mode === '2d') return;
+    try {
+      if (renderer && renderer.dispose) renderer.dispose();
+    } catch (e) {}
+    renderer = null;
+    scene = null;
+    camera = null;
+    init2D(reason);
+    // re-render whatever card was up so it no longer describes a dead renderer
+    if (state === 'menu') showMenuOv();
+    else if (state === 'paused') replayPause();
+    else if (state === 'over' || state === 'win') updateHUD();
+    updateHUD();
   }
   function fitCanvas() {
     var dpr = Math.min(window.devicePixelRatio || 1, 1.5);
@@ -4337,14 +4554,25 @@
   // across consecutive windows, and a comfortably fast run steps back up.
   var qLow = 0,
     qHigh = 0;
+  // The device pixel ratio the renderer starts at (capped, see initThree).
+  // Auto-quality drops it to 1 on the way down and must put it back on the way
+  // up, or one slow window leaves the board soft for the rest of the session.
+  var QUALITY_PR = Math.min(window.devicePixelRatio || 1, 1.5);
   function setQuality(next) {
-    if (next === 'low') {
-      renderer.shadowMap.enabled = false;
-      if (dirLight) dirLight.castShadow = false;
+    if (!renderer) return;
+    // Every tier change recompiles materials: toggling shadowMap.enabled or the
+    // pixel ratio does not by itself re-upload the shader defines, so shadows
+    // would silently stay off after climbing back up.
+    function recompile() {
       if (scene)
         scene.traverse(function (o) {
           if (o.material) o.material.needsUpdate = true;
         });
+    }
+    if (next === 'low') {
+      renderer.shadowMap.enabled = false;
+      if (dirLight) dirLight.castShadow = false;
+      recompile();
     } else if (next === 'medium') {
       renderer.setPixelRatio(1);
       // shadows come back on the way up, unless the player turned them off
@@ -4352,6 +4580,14 @@
         renderer.shadowMap.enabled = true;
         if (dirLight) dirLight.castShadow = true;
       }
+      recompile();
+    } else if (next === 'high') {
+      renderer.setPixelRatio(QUALITY_PR);
+      if ($('opt-shadows') && $('opt-shadows').checked) {
+        renderer.shadowMap.enabled = true;
+        if (dirLight) dirLight.castShadow = true;
+      }
+      recompile();
     }
     quality = next;
     applyQualityVisuals();
@@ -5002,6 +5238,54 @@
       combo = n;
       lastEatAt = performance.now();
       updateHUD();
+    },
+    // Records introspection: unit/e2e can assert the per-mode key, the
+    // prestige-free daily score and the streak without reading localStorage.
+    get runKey() {
+      return runKey;
+    },
+    get baseScore() {
+      return Math.round(baseScore);
+    },
+    get bests() {
+      var o = {};
+      for (var k in bests) o[k] = bests[k];
+      return o;
+    },
+    get records() {
+      return {
+        overall: best,
+        bests: (function () {
+          var o = {};
+          for (var k in bests) o[k] = bests[k];
+          return o;
+        })(),
+        daily: { best: dailyRec.best, base: dailyRec.base, day: dailyRec.day },
+        streak: { cur: dailyStreak.cur, long: dailyStreak.long, last: dailyStreak.last },
+        line: recordsLine(),
+      };
+    },
+    // Simulate a GPU context that never comes back, so the fallback path can be
+    // exercised without a real driver reset (which no CI machine can produce).
+    loseGpu: function () {
+      if (!canvas) return false;
+      canvas.dispatchEvent(new Event('webglcontextlost'));
+      return true;
+    },
+    force2D: function (reason) {
+      fallbackTo2D(reason || t('note_2d_render'));
+      return mode;
+    },
+    get pixelRatio() {
+      try {
+        return renderer ? renderer.getPixelRatio() : null;
+      } catch (e) {
+        return null;
+      }
+    },
+    setQuality: function (q) {
+      setQuality(q);
+      return quality;
     },
     bank: function () {
       return bankNow();

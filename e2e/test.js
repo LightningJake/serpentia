@@ -1038,6 +1038,24 @@ async function newPage(browser, blockCDN) {
     // The regression this locks down: the zoom must NOT react to where the food
     // is. Adjacent food, opposite-corner food, then adjacent again — the radius
     // has to be identical every time (it used to pump by 5-15 world units).
+    // The camera eases every frame, so a fixed sleep measures a half-finished
+    // animation whenever the machine is busy (SwiftShader under the full suite
+    // can deliver two frames in 600ms). Every radius sample below therefore
+    // waits for the ease to actually settle first.
+    // The camera eases every frame, so a fixed sleep measures a half-finished
+    // animation whenever the machine is busy (SwiftShader under the full suite
+    // can deliver two frames in 600ms), and a "wait until it stops moving"
+    // loop can mistake a slow renderer for a finished one. Waiting for the
+    // radius to ARRIVE at a known target is immune to both.
+    const fitR = await g(page, 'fitRadius');
+    const radiusNear = async (target, tol) => {
+      for (let i = 0; i < 100; i++) {
+        const r = await g(page, 'radius');
+        if (Math.abs(r - target) <= tol) return r;
+        await page.waitForTimeout(50);
+      }
+      return g(page, 'radius');
+    };
     await page.evaluate(() => {
       window.__game.start();
       window.__game.pause();
@@ -1045,17 +1063,14 @@ async function newPage(browser, blockCDN) {
       window.__game.setDir(1, 0);
       window.__game.setFood(11, 10);
     });
-    await page.waitForTimeout(800);
-    const rNear1 = (await frameNow()).radius;
+    const rNear1 = await radiusNear(fitR, 0.3);
     await page.evaluate(() => window.__game.setFood(0, 0));
-    await page.waitForTimeout(400);
-    const rFar = (await frameNow()).radius;
+    const rFar = await radiusNear(fitR, 0.3);
     await page.evaluate(() => {
       const s = window.__game.snake[0];
       window.__game.setFood(s.x + 1, s.y);
     });
-    await page.waitForTimeout(2500);
-    const rNear2 = (await frameNow()).radius;
+    const rNear2 = await radiusNear(fitR, 0.3);
     check(
       'frame: zoom fixed regardless of food distance',
       Math.abs(rFar - rNear1) < 0.6 && Math.abs(rNear2 - rNear1) < 0.6,
@@ -1063,13 +1078,11 @@ async function newPage(browser, blockCDN) {
     );
     // inspection hold: manual zoom wins briefly, then the fixed frame resumes
     await page.evaluate(() => window.__game.setFood(19, 19));
-    await page.waitForTimeout(1200);
+    await radiusNear(fitR, 0.3);
     const fitBefore = (await frameNow()).fit;
-    await page.evaluate(() => window.__game.setRadius(14, 1500));
-    await page.waitForTimeout(600);
-    const rHold = (await frameNow()).radius;
-    await page.waitForTimeout(2500);
-    const rResumed = (await frameNow()).radius;
+    await page.evaluate(() => window.__game.setRadius(14, 6000));
+    const rHold = await radiusNear(14, 0.5);
+    const rResumed = await radiusNear(fitBefore, 0.3);
     check(
       'frame: inspection hold then fixed resume',
       rHold < 20 && Math.abs(rResumed - fitBefore) < 0.6,
@@ -1483,7 +1496,12 @@ async function newPage(browser, blockCDN) {
       /wall/i.test(recap) && /Meadow/.test(recap) && /pts/.test(recap) && /Best/.test(recap),
       recap
     );
-    // 2. share picture primed on game over; the button delivers a file/toast
+    // 2. share picture primed on game over; the button delivers a file/toast.
+    // Priming is asynchronous by design (3D capture is queued into the frame
+    // loop and the card image only reports ready after its <img> loads), so
+    // wait for the flag rather than sampling it once: under load the recap text
+    // can land before the picture finishes composing.
+    await page.waitForFunction(() => window.__game.shotReady, null, { timeout: 8000 });
     check('shot: primed on game over', await page.evaluate(() => window.__game.shotReady));
     await page.locator('#btn-shot').click();
     await page.waitForTimeout(500);
@@ -2587,6 +2605,215 @@ async function newPage(browser, blockCDN) {
     check('2D: pause works', (await g(page2, 'state')) === 'paused');
     check('no page errors in 2D session', r2.errors.length === 0, r2.errors.slice(0, 2).join(' | '));
     await page2.close();
+
+    // ---------- Reliability: quality recovery + GPU loss ----------
+    // devicePixelRatio is stubbed high BEFORE first paint: with the real value
+    // (1 in headless) the capped ratio and the medium tier's 1.0 are the same
+    // number, so the test could not tell "restored" from "never dropped".
+    const qPage = await browser.newPage();
+    const qErr = [];
+    qPage.on('pageerror', (e) => qErr.push(String((e && e.message) || e)));
+    await qPage.addInitScript(() => {
+      Object.defineProperty(window, 'devicePixelRatio', { get: () => 3 });
+    });
+    await qPage.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
+    await qPage.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    check(
+      'quality: boots in 3D with a stubbed DPR',
+      (await g(qPage, 'mode')) === '3d',
+      await g(qPage, 'mode')
+    );
+    const pr = await qPage.evaluate(() => {
+      const gm = window.__game;
+      const start = gm.pixelRatio;
+      gm.setQuality('medium');
+      const mid = gm.pixelRatio;
+      gm.setQuality('high');
+      const back = gm.pixelRatio;
+      gm.setQuality('low');
+      const low = gm.pixelRatio;
+      gm.setQuality('high');
+      const back2 = gm.pixelRatio;
+      return { start, mid, back, low, back2 };
+    });
+    check(
+      'quality: high restores the capped pixel ratio after any dip',
+      Math.abs(pr.start - 1.5) < 0.01 &&
+        pr.mid === 1 &&
+        Math.abs(pr.back - 1.5) < 0.01 &&
+        Math.abs(pr.back2 - 1.5) < 0.01,
+      JSON.stringify(pr)
+    );
+    // a GPU context that never comes back must not freeze the game on a dead
+    // 3D frame: the run moves onto the 2D board with its score intact
+    const gpuBefore = await qPage.evaluate(() => {
+      const gm = window.__game;
+      gm.setQuality('high');
+      gm.start();
+      gm.forceEats(3);
+      gm.loseGpu();
+      return { mode: gm.mode, score: gm.score };
+    });
+    await qPage.waitForFunction(() => window.__game.mode === '2d', null, { timeout: 8000 });
+    const gpuAfter = await qPage.evaluate(() => {
+      const c = document.getElementById('scene');
+      return {
+        score: window.__game.score,
+        id: c.id,
+        has2d: !!c.getContext('2d'),
+        // the replacement canvas must have inherited the steering handlers,
+        // otherwise the fallback board is mute
+        steer: (function () {
+          const gm = window.__game;
+          gm.pause();
+          gm.setSnake([{ x: 10, y: 10 }]);
+          gm.setDir(0, -1);
+          const v = gm.view;
+          const r = c.getBoundingClientRect();
+          const pt = {
+            pointerType: 'mouse',
+            button: 0,
+            clientX: r.left + (v.ox + 14.5 * v.cell) / v.dpr,
+            clientY: r.top + (v.oy + 10.5 * v.cell) / v.dpr,
+            bubbles: true,
+            cancelable: true,
+          };
+          c.dispatchEvent(new PointerEvent('pointerdown', pt));
+          c.dispatchEvent(new PointerEvent('pointerup', pt));
+          return gm.queue;
+        })(),
+      };
+    });
+    check(
+      'gpu: a context that never returns falls back to 2D with the run intact',
+      gpuBefore.mode === '3d' &&
+        gpuAfter.score === gpuBefore.score &&
+        gpuAfter.id === 'scene' &&
+        gpuAfter.has2d,
+      JSON.stringify({ before: gpuBefore, after: gpuAfter })
+    );
+    check(
+      'gpu: the replacement canvas still steers',
+      gpuAfter.steer.length === 1 && gpuAfter.steer[0].x === 1 && gpuAfter.steer[0].y === 0,
+      JSON.stringify(gpuAfter.steer)
+    );
+    check('no page errors in quality/gpu session', qErr.length === 0, qErr.slice(0, 2).join(' | '));
+    await qPage.close();
+
+    // ---------- Records: per mode+speed best, overall kept, quit files it ----------
+    const rRec = await newPage(browser, false);
+    const pRec = rRec.page;
+    const recPlay = await pRec.evaluate(() => {
+      document.getElementById('opt-wrap').checked = true;
+      document.getElementById('opt-speed').value = 'fast';
+      const gm = window.__game;
+      gm.start();
+      gm.forceEats(4);
+      return { key: gm.runKey, score: gm.score, bests: gm.bests };
+    });
+    check(
+      'records: the run is filed under its own mode+speed',
+      recPlay.key === 'wrap-fast' && recPlay.score >= 40,
+      JSON.stringify(recPlay)
+    );
+    // Quit used to reset() straight past the best-save, so abandoning a record
+    // run lost it silently. The score must survive the trip.
+    await pRec.evaluate(() => window.__game.pause());
+    await pRec.locator('#btn-quit').click();
+    await pRec.waitForFunction(() => window.__game.state === 'menu', null, { timeout: 8000 });
+    const recQuit = await pRec.evaluate(() => ({
+      overall: window.__game.records.overall,
+      bests: window.__game.bests,
+      line: document.getElementById('rec-line').textContent,
+      stored: JSON.parse(localStorage.getItem('snake3d.bests') || '{}'),
+    }));
+    check(
+      'records: quitting a run files its best instead of discarding it',
+      recQuit.overall === recPlay.score && recQuit.bests['wrap-fast'] === recPlay.score,
+      JSON.stringify(recQuit.bests)
+    );
+    check(
+      'records: the menu records row names the mode best',
+      recQuit.line.indexOf(String(recPlay.score)) >= 0 && recQuit.line.indexOf('🏆') === 0,
+      recQuit.line
+    );
+    check(
+      'records: per-mode best is persisted',
+      recQuit.stored['wrap-fast'] === recPlay.score,
+      JSON.stringify(recQuit.stored)
+    );
+    await pRec.reload({ waitUntil: 'load' });
+    await pRec.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    const recReload = await pRec.evaluate(() => window.__game.bests['wrap-fast']);
+    check('records: per-mode best survives a reload', recReload === recPlay.score, String(recReload));
+    // restart mid-run must not throw the best away either
+    const recRestart = await pRec.evaluate(() => {
+      const gm = window.__game;
+      gm.start();
+      gm.forceEats(4);
+      return { score: gm.score, best: gm.records.overall };
+    });
+    await pRec.locator('#btn-restart').click();
+    const recAfter = await pRec.evaluate(() => ({
+      best: window.__game.records.overall,
+      score: window.__game.score,
+      state: window.__game.state,
+    }));
+    check(
+      'records: restart keeps the best and clears the score',
+      recAfter.best === recRestart.best && recAfter.score === 0 && recAfter.state === 'playing',
+      JSON.stringify(recAfter)
+    );
+    check('no page errors in records session', rRec.errors.length === 0, rRec.errors.slice(0, 2).join(' | '));
+    await pRec.close();
+
+    // ---------- Daily records: prestige excluded, streak kept ----------
+    const rDaily = await newPage(browser, false);
+    const pDaily = rDaily.page;
+    // level 2+ unlocks prestige; 12 foods = level 3
+    await pDaily.evaluate(() => {
+      const gm = window.__game;
+      gm.start();
+      gm.forceEats(12);
+      gm.die('test');
+    });
+    await pDaily.waitForFunction(
+      () => window.__game.state === 'over' && !document.getElementById('prestige-row').hidden,
+      null,
+      { timeout: 10000 }
+    );
+    const dailyPrestige = await pDaily.evaluate(() => {
+      const gm = window.__game;
+      const before = gm.records.overall;
+      document.getElementById('btn-prestige').click();
+      return { before, prestige: gm.records ? before : 0 };
+    });
+    await pDaily.waitForFunction(() => window.__game.state === 'playing', null, { timeout: 10000 });
+    const dailyRun = await pDaily.evaluate(() => {
+      const gm = window.__game;
+      gm.setDaily(true, 40000);
+      gm.forceEats(1);
+      gm.die('test');
+      return { base: gm.baseScore, score: gm.score, rec: gm.records.daily, streak: gm.records.streak };
+    });
+    await pDaily.waitForFunction(() => window.__game.state === 'over', null, { timeout: 10000 });
+    check(
+      'daily: the record is scored without the prestige multiplier',
+      dailyRun.base === 10 && dailyRun.score === 11 && dailyRun.rec.base === 10 && dailyRun.rec.best === 11,
+      JSON.stringify(dailyRun)
+    );
+    check(
+      'daily: best and streak are recorded',
+      dailyRun.streak.cur >= 1 && dailyRun.streak.long >= 1,
+      JSON.stringify(dailyRun.streak)
+    );
+    await pDaily.evaluate(() => window.__game.setDaily(false));
+    check(
+      'no page errors in daily records session',
+      rDaily.errors.length === 0,
+      rDaily.errors.slice(0, 2).join(' | ')
+    );
+    await pDaily.close();
   } finally {
     await browser.close();
     server.close();

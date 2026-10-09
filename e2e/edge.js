@@ -364,6 +364,42 @@ async function launch() {
     );
     check('edge: erase causes no errors', err4.length === 0, err4.slice(0, 2).join(' | '));
     await ctx4.close();
+
+    // 17. records that are valid JSON but the WRONG SHAPE must not brick boot:
+    // an array of bests, a string daily blob and NaN-ish numbers all have to
+    // fall back to "no records" instead of throwing inside skinUnlocked() etc.
+    const ctx5 = await browser.newContext();
+    await ctx5.addInitScript(() => {
+      localStorage.setItem('snake3d.best', '1234');
+      localStorage.setItem('snake3d.bests', '[1,2,3]');
+      localStorage.setItem('snake3d.daily', '"not a blob"');
+      localStorage.setItem(
+        'snake3d.life',
+        JSON.stringify({ v: 1, games: 5, foods: 30, bestCombo: 4, bestLevel: 3, wins: 1, prestige: 2 })
+      );
+      localStorage.setItem('snake3d.ach', JSON.stringify(['bite']));
+      localStorage.setItem('snake3d.settings', JSON.stringify({ 'opt-speed': 'fast' }));
+      localStorage.setItem('snake3d.seen', '1');
+    });
+    const p5 = await ctx5.newPage();
+    const err5 = [];
+    p5.on('pageerror', (e) => err5.push(String((e && e.message) || e)));
+    await p5.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
+    await p5.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    const rec5 = await p5.evaluate(() => ({
+      best: window.__game.records.overall,
+      bests: window.__game.bests,
+      daily: window.__game.records.daily,
+      streak: window.__game.records.streak,
+      line: document.getElementById('rec-line').textContent,
+    }));
+    check(
+      'edge: wrong-shaped records blobs load as empty, boot unaffected',
+      rec5.best === 1234 && Object.keys(rec5.bests).length === 0 && rec5.daily.base === 0,
+      JSON.stringify(rec5)
+    );
+    check('edge: wrong-shaped records cause no errors', err5.length === 0, err5.slice(0, 2).join(' | '));
+    await ctx5.close();
   } finally {
     await browser.close();
     server.close();

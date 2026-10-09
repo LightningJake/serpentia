@@ -178,6 +178,36 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
       if (layout) {
         const cornerSweep = await page.evaluate(async () => {
           const g = window.__game;
+          const frame = () => new Promise((r) => requestAnimationFrame(() => r()));
+          // Wait until the camera has actually STOPPED moving, instead of
+          // sleeping a fixed 420ms. Under load (the full suite runs this file
+          // while SwiftShader is already busy) a fixed sleep can deliver two
+          // frames, the ease is still mid-flight, and a corner measures as
+          // off-screen for a reason that has nothing to do with framing.
+          const settle = async () => {
+            let last = null;
+            for (let i = 0; i < 90; i++) {
+              await frame();
+              const h = g.snake[0];
+              const p = g.project(h.x, h.y);
+              if (!p) return false;
+              const s = ((p.x + 1) / 2) * innerWidth + '/' + ((1 - p.y) / 2) * innerHeight;
+              if (last === s) return true;
+              last = s;
+            }
+            return last !== null;
+          };
+          const measure = () => {
+            const live = g.snake[0]; // the LIVE head, not the corner we aimed at
+            const p = g.project(live.x, live.y);
+            if (!p) return { m: -1, live: live };
+            const sx = ((p.x + 1) / 2) * innerWidth;
+            const sy = ((1 - p.y) / 2) * innerHeight;
+            return {
+              m: p.behind ? -1 : Math.min(sx, innerWidth - sx, sy, innerHeight - sy),
+              live: live,
+            };
+          };
           // pause so the head cannot wrap away from the corner under test
           // (this suite runs with wrap ON) - the camera easing still runs
           g.pause();
@@ -196,14 +226,14 @@ const inside = (p) => p && !p.behind && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1
               { x: hx, y: Math.min(19, hy + 2) },
             ]);
             g.setDir(0, -1);
-            await new Promise((r) => setTimeout(r, 420)); // let the ease settle
-            const live = g.snake[0]; // the LIVE head, not the corner we aimed at
-            const p = g.project(live.x, live.y);
-            const sx = ((p.x + 1) / 2) * innerWidth;
-            const sy = ((1 - p.y) / 2) * innerHeight;
-            const m = p.behind ? -1 : Math.min(sx, innerWidth - sx, sy, innerHeight - sy);
-            per.push([live.x, live.y, Math.round(m)]);
-            if (m < worstMargin) worstMargin = m;
+            let r = null;
+            for (let attempt = 0; attempt < 2; attempt++) {
+              await settle();
+              r = measure();
+              if (r.m > 6) break;
+            }
+            per.push([r.live.x, r.live.y, Math.round(r.m)]);
+            if (r.m < worstMargin) worstMargin = r.m;
           }
           g.pause(); // resume
           return { worstMargin: Math.round(worstMargin), per };
