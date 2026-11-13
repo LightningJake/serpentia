@@ -21,7 +21,7 @@
  * No build step: the cache name is a manual version. Bump it whenever shipped
  * assets change, which is what triggers the "new version" refresh prompt.
  */
-const CACHE = 'snake-v15';
+const CACHE = 'snake-v16';
 const LOCAL = [
   './',
   './index.html',
@@ -31,6 +31,9 @@ const LOCAL = [
   './i18n.js',
   './manifest.json',
   './icon.svg',
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-512.png',
 ];
 const CDN = ['https://cdnjs.cloudflare.com/ajax/libs/three.js/0.149.0/three.min.js'];
 const PRECACHE = LOCAL.concat(CDN);

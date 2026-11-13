@@ -29,7 +29,6 @@
   var EMBER_BURN = 3000; // volcano rule: ignited ember stays lethal this long
   var EMBER_EVERY = 5000; // volcano rule: new ember cadence while playing
   var EMBER_MAX = 3; // volcano rule: max concurrent embers
-  var COMBO_WINDOW = 5000; // base gap that chains a combo; shrinks per step (see SnakeLogic.comboWindow)
   var COMBO_HOT = 8; // combo at/above this paints the HUD pill as a high-risk chain
   var BANK_MIN = 5; // shortest chain worth cashing out on the pause card
   var BANK_UNIT = 5; // bank = BANK_UNIT * combo^2 * prestige
@@ -98,7 +97,7 @@
   var skinId = 'classic'; // active snake skin (achievement-gated)
   var combo = 0,
     lastEatAt = 0; // combo multiplier chain
-  var comboWindowMs = COMBO_WINDOW; // allowance currently in effect (shrinks as the chain grows)
+  var comboWindowMs = 0; // allowance currently in effect (shrinks as the chain grows); set from tick by reset()/registerEat()
   var banked = 0; // score cashed out this run
   var lastLostCombo = 0; // chain a death forfeited, so the recap can name what it cost
   // Daily challenge: one date-seeded rule and one date-seeded map, identical
@@ -548,7 +547,8 @@
     setText(elLen, snake.length);
     var gl = $('goal');
     if (gl) setText(gl, (foodsEaten % FOODS_PER_LEVEL) + '/' + FOODS_PER_LEVEL);
-    // minimal in-game HUD: extra pills hide while playing
+    // minimal in-game HUD: level/length/goal stay menu-only. The combo pill
+    // stays on during play: it is the run's live risk meter, not a stat.
     var mini = state === 'playing';
     var hideIds = ['pill-level', 'pill-length', 'pill-goal'];
     for (var hi = 0; hi < hideIds.length; hi++) {
@@ -557,13 +557,23 @@
     }
     var pc = $('pill-combo');
     if (pc) {
-      pc.hidden = combo < 2 || mini;
+      pc.hidden = combo < 2;
       if (combo >= 2) {
         // uncapped now: the ladder is the point, so the HUD must not imply a
         // ceiling the scoring no longer has
         setText($('combo'), 'x' + combo);
         pc.classList.toggle('hot', combo >= COMBO_HOT);
         setAttr(pc, 'title', t('tip_combo_hot', { n: combo }));
+        // The fuse: how much of the current step's window is left, so the
+        // shrinking grace time is visible instead of secret. Style-only
+        // update: the pill's text stays as-is, so the aria-live HUD never
+        // re-announces on every tick.
+        var cbar = $('combo-bar');
+        if (cbar) {
+          var remaining = Math.max(0, lastEatAt + comboWindowMs - performance.now());
+          var frac = comboWindowMs > 0 ? Math.max(0, Math.min(1, remaining / comboWindowMs)) : 0;
+          cbar.style.transform = 'scaleX(' + frac.toFixed(3) + ')';
+        }
       }
     }
     // shield charge stays visible mid-run: it is a life, not a stat

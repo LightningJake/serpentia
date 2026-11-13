@@ -166,6 +166,34 @@ body {
 .pill.combo.hot b {
   color: #ffb347;
 }
+/* combo fuse: how much of the current step's window is left. Absolutely
+   positioned inside the pill so it never shifts the pill's box metrics, and
+   driven by transform only (no text mutation → no aria-live announcements). */
+.pill.combo {
+  position: relative;
+  overflow: hidden;
+}
+.combo-bar {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: rgba(255, 95, 162, 0.2);
+  overflow: hidden;
+}
+.combo-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: #ff5fa2;
+  transform-origin: left center;
+  /* transform set inline by updateHUD(); tick-driven, no transition */
+}
+.pill.combo.hot .combo-bar-fill {
+  background: #ffb347;
+}
 @keyframes combo-hot {
   from {
     box-shadow: 0 0 8px rgba(255, 179, 71, 0.35);

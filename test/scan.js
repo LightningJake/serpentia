@@ -223,5 +223,53 @@ else good('food tints (' + tintCount + ' biomes)');
 if (wallCount !== levelCount) bad('wall styles', wallCount + ' styles for ' + levelCount + ' biomes');
 else good('wall styles (' + wallCount + ' biomes)');
 
+// ---- 16. HTML fallback text must match the en dictionary
+// [data-i18n]/[data-i18n-html] carry an English fallback that only shows
+// before i18n.js loads (or if it never does), and nothing else compared the
+// two: the copy had silently drifted apart once already ("up to x5" survived
+// the uncapped combo ladder). Compare PLAIN TEXT — tags stripped, entities
+// decoded, JS \uXXXX escapes decoded, whitespace collapsed — with a
+// containment check. Plain text of the dictionary string either appears in
+// the stripped document or it does not; markup reshuffles cannot false-
+// positive. The fallback IS the English UI text, so it must not paraphrase.
+function plainText(s) {
+  const map = {
+    nbsp: ' ',
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+    times: '×',
+    hellip: '…',
+    mdash: '—',
+    ndash: '–',
+    middot: '·',
+  };
+  return String(s)
+    .replace(/\\u([0-9a-f]{4})/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&([a-z]+);/gi, (_, n) => map[String(n).toLowerCase()] || ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+const i18nWindow = {};
+new Function('window', i18nSrc)(i18nWindow);
+const enDict = (i18nWindow.I18N && i18nWindow.I18N.en) || {};
+const htmlPlain = plainText(html);
+const fallbackKeys = [
+  ...new Set([...html.matchAll(/data-i18n(?:-html)?="([A-Za-z0-9_]+)"/g)].map((m) => m[1])),
+];
+const driftKeys = [];
+for (const k of fallbackKeys) {
+  const v = enDict[k];
+  if (typeof v !== 'string') continue; // absent key is check 1's job
+  const dp = plainText(v);
+  if (dp.length < 12) continue; // too short to be a reliable substring
+  if (!htmlPlain.includes(dp)) driftKeys.push(k);
+}
+if (driftKeys.length) bad('HTML fallback drift', driftKeys.join(', '));
+else good('HTML fallback drift (' + fallbackKeys.length + ' fallbacks match the en dictionary)');
+
 console.log('\n==== scan: ' + (fails ? 'FAILURES' : 'all clean') + ' ====');
 process.exit(fails ? 1 : 0);

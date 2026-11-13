@@ -45,6 +45,7 @@
       }
     </script>
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="icon-192.png" />
     <link rel="manifest" href="manifest.json" />
     <link rel="stylesheet" href="style.css" />
     <!-- Pinned UMD builds (SRI) work over file:// AND http. Two-CDN fallback chain. -->
@@ -108,8 +109,10 @@
               ><span data-i18n="pill_goal">Goal</span> <b id="goal">0/6</b></span
             >
             <span class="pill combo" id="pill-combo" hidden data-i18n-title="tip_combo"
-              ><span data-i18n="pill_combo">Combo</span> <b id="combo">x1</b></span
-            >
+              ><span data-i18n="pill_combo">Combo</span> <b id="combo">x1</b
+              ><span class="combo-bar" aria-hidden="true"
+                ><span class="combo-bar-fill" id="combo-bar"></span></span
+            ></span>
             <span class="pill" id="pill-shield" hidden title="Shield">🛡</span>
           </div>
         </div>
@@ -132,7 +135,7 @@
           <div class="life-line" id="rec-line"></div>
           <p id="ov-sub">Eat the orbs. Don't hit walls or yourself.</p>
           <p class="hint" id="menu-howto" data-i18n="menu_howto">
-            Eat orbs, don't hit walls or yourself. Pause to bank a hot streak before it breaks.
+            Eat orbs, avoid walls and your own tail. Pause to bank a hot streak before it breaks.
           </p>
           <div id="ov-stats"></div>
           <p class="hint" id="ov-hint" hidden></p>
@@ -346,25 +349,33 @@
               Keyboard: <b>← / →</b> or <b>A / D</b> turn the snake (it always moves forward).
               <b>Tap the board</b>, swipe, or the ◀ ▶ buttons work too.
             </li>
-            <li data-i18n-html="h3">Eat glowing orbs to grow and score. The snake speeds up as you eat.</li>
+            <li data-i18n-html="h3">
+              Eat glowing orbs to grow and score. The snake speeds up as you eat, and bonus orbs turn up more
+              often the deeper you get.
+            </li>
             <li data-i18n-html="h4">
-              Chain eats within 5s for a <b>combo multiplier</b> (up to x5). Pink <b>bonus orbs</b> are worth
-              50 × combo — grab them fast!
+              Chain eats to climb the <b>combo ladder</b>: the multiplier keeps rising, but the window to land
+              the next one <b>shrinks every step</b>, so a long chain is a bet. Pink <b>bonus orbs</b> are
+              worth 50 × combo. Pause and <b>bank</b> a chain of 5+ for a guaranteed lump sum — crash with one
+              un-banked and it is gone.
             </li>
             <li data-i18n-html="h5">Solid walls kill — or enable <b>Wrap walls</b> to pass through.</li>
             <li data-i18n-html="h6">
-              Every 6 foods you level up — and in <b>Obstacles</b> mode each level adds deadly blocks. Each
-              level brings a new arena: 🌱 Meadow → 🏜️ Desert → 🌊 Ocean → 🌋 Volcano → 🌌 Space → 🌲 Forest →
-              🌅 Sunset → ❄️ Ice.
+              Every 6 foods you level up. In <b>Obstacles</b> mode deadly blocks appear and each level adds
+              more; in <b>Maze</b> mode you start inside a corridor layout and it keeps thickening. Each level
+              brings a new arena: 🌱 Meadow → 🏜️ Desert → 🌊 Ocean → 🌋 Volcano → 🌌 Space → 🌲 Forest → 🌅
+              Sunset → ❄️ Ice.
             </li>
             <li data-i18n-html="h7">
               Pick a mode above: <b>Classic</b> walls kill, <b>Wrap</b> passes through, <b>Obstacles</b> adds
-              hazards.
+              hazards, <b>Maze</b> does both with a proper corridor layout. <b>🧒 Kid mode</b> means slow +
+              wrap, no obstacles.
             </li>
             <li data-i18n-html="h8">
-              Quick opposite turns are ignored so you can't instant-suicide by double-tap.
+              Sharp 180° flips are impossible — two quick turns loop you around safely. Opposite taps are
+              ignored.
             </li>
-            <li data-i18n-html="h9">Game auto-pauses when the tab hides or window blurs.</li>
+            <li data-i18n-html="h9">Game auto-pauses when the tab hides, the window blurs, or help opens.</li>
             <li data-i18n-html="h10">Fill the whole 20×20 board to win (400 segments).</li>
             <li data-i18n-html="h11">
               Dying at level 2+ offers <b>⭐ Prestige</b>: restart with a permanent +10% score bonus that
@@ -376,6 +387,13 @@
               is readable and follows the snake, with a <b>dashed outline</b> marking the walls that run
               off-screen.
             </li>
+            <li data-i18n-html="h13">
+              A cyan <b>🛡 shield orb</b> sometimes appears — grab it to survive your next crash.
+            </li>
+            <li data-i18n-html="h14">
+              Unlock <b>snake skins</b> with achievements (see the Look &amp; feel settings). Links like
+              <b>?theme=volcano&amp;seed=7</b> replay the same map and spawns.
+            </li>
             <li data-i18n-html="h15">
               Terrain rules: <b>🧊 Ice</b> is slippery (turns land one cell later), <b>🏜️ Desert</b> food
               withers in 20s, <b>🌋 Volcano</b> embers telegraph orange before they burn.
@@ -384,16 +402,9 @@
               Obstacle layouts are <b>hand-designed and symmetric</b> per arena (a scatter variant appears
               sometimes); fresh blocks pulse <b>orange</b> before they can kill.
             </li>
-            <li data-i18n-html="h13">
-              A cyan <b>🛡 shield orb</b> sometimes appears — grab it to survive your next crash.
-            </li>
-            <li data-i18n-html="h14">
-              Unlock <b>snake skins</b> with achievements (see the Look &amp; feel settings). Links like
-              <b>?theme=volcano&amp;seed=7</b> replay the same map and spawns.
-            </li>
             <li data-i18n-html="h17">
               📅 <b>Daily challenge</b>: the same map and the same twist for everyone, all day. Everyone gets
-              an identical seed — chase a friend's score.
+              an identical seed — chase a friend’s score.
             </li>
           </ul>
           <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">Got it</button>
@@ -410,9 +421,7 @@
            spoken exactly once (a second live region double-announced them) -->
       <div id="toast" aria-hidden="true"></div>
       <div id="banner" aria-hidden="true"></div>
-      <div id="hint" hidden data-i18n-html="hint_tut">
-        👉 <b>Click the board</b> where you want to go — or use Arrows / swipe!
-      </div>
+      <div id="hint" hidden data-i18n-html="hint_tut">👉 <b>Tap the board</b> to steer — or ← → to turn!</div>
       <div id="sr-status" class="sr-only" role="status" aria-live="polite"></div>
       <div id="flash" aria-hidden="true"></div>
       <div id="nogl" hidden>

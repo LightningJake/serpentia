@@ -1,7 +1,7 @@
 {
   "name": "opencode",
   "version": "1.0.0",
-  "description": "",
+  "description": "3D Snake — a 3D snake game for the browser (Three.js with a 2D fallback): eat orbs, climb a shrinking-window combo ladder, bank streaks, conquer 8 arena biomes and a daily challenge. Playable offline as a PWA.",
   "main": "main.js",
   "scripts": {
     "test": "node e2e/test.js",
@@ -19,8 +19,23 @@
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
-  "keywords": [],
+  "keywords": [
+    "game",
+    "snake",
+    "3d",
+    "threejs",
+    "webgl",
+    "browser",
+    "pwa",
+    "offline",
+    "daily-challenge"
+  ],
   "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LightningJake/serpentia.git"
+  },
+  "homepage": "https://serpentia-coral.vercel.app/",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
