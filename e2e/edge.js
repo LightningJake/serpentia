@@ -150,11 +150,13 @@ async function launch() {
     );
 
     // 7. window blur auto-pauses (switching apps)
+    // (the blur auto-pause carries a short grace period for focus flickers,
+    // so wait comfortably past it)
     await page.evaluate(() => {
       window.__game.start();
       window.dispatchEvent(new Event('blur'));
     });
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(300);
     check('edge: blur auto-pauses', (await g(page, 'state')) === 'paused');
 
     // 8. resize storm keeps the loop alive

@@ -3025,8 +3025,23 @@
   document.addEventListener('visibilitychange', function () {
     if (document.hidden && state === 'playing') togglePause();
   });
+  // Auto-pause on window blur, with a short grace period. Losing window focus
+  // is very often a transient flicker - an alt-tab quick-switcher, an OS-level
+  // focus bounce, automation Tab keys - rather than the player actually
+  // leaving. Pause only if focus has not returned within BLUR_GRACE_MS; a
+  // real departure stays paused, a flicker never fires the pause at all.
+  // (visibilitychange above stays immediate: a hidden tab is never a flicker.)
+  var BLUR_GRACE_MS = 120;
+  var blurPauseTimer = 0;
   window.addEventListener('blur', function () {
-    if (state === 'playing') togglePause();
+    if (state !== 'playing') return;
+    clearTimeout(blurPauseTimer);
+    blurPauseTimer = setTimeout(function () {
+      if (state === 'playing') togglePause();
+    }, BLUR_GRACE_MS);
+  });
+  window.addEventListener('focus', function () {
+    clearTimeout(blurPauseTimer); // the flicker ended in time - never paused
   });
 
   // ---------- Renderer: try 3D, fall back to 2D ----------

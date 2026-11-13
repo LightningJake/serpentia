@@ -316,8 +316,14 @@ async function newPage(browser, blockCDN) {
     );
 
     // Focused button + Space must fire exactly once (no native+global double)
-    await page.evaluate(() => window.__game.start());
-    await page.keyboard.press('Tab'); // focus first HUD button (Pause)
+    // Focus the button explicitly instead of Tab: in headless Edge a Tab keypress
+    // makes the window fire blur, which trips the auto-pause-on-blur safeguard and
+    // drops focus off the button before Space ever gets to it. The point of this
+    // check is Space on a *focused* button, not Tab traversal itself.
+    await page.evaluate(() => {
+      window.__game.start();
+      document.getElementById('btn-pause').focus();
+    });
     await page.keyboard.press('Space');
     await page.waitForTimeout(200);
     check('keyboard: focused Pause + Space pauses once', (await g(page, 'state')) === 'paused');
