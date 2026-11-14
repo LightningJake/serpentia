@@ -31,6 +31,15 @@ async function toMenu(page) {
   await page.waitForFunction(() => window.__game.state === 'menu', null, { timeout: 8000 });
 }
 
+// Look & feel / Sound / Controls live behind the Advanced disclosure now.
+// Expand it (no-op if already open) before tests poke at those controls.
+async function openAdvanced(page) {
+  await page.evaluate(() => {
+    var t = document.getElementById('adv-toggle');
+    if (t && t.getAttribute('aria-expanded') !== 'true') t.click();
+  });
+}
+
 async function newPage(browser, blockCDN) {
   const page = await browser.newPage();
   if (blockCDN) await page.route(/cdnjs\.cloudflare\.com|cdn\.jsdelivr\.net/, (r) => r.abort());
@@ -739,12 +748,38 @@ async function newPage(browser, blockCDN) {
 
     // Settings live in the menu card (not floating in-game anymore)
     check('menu: settings panel in card', await page.locator('#settings-panel').isVisible());
+    // Advanced disclosure: starts collapsed (fresh profile), opens on click,
+    // exposes the Look & feel group, and flips aria-expanded both ways.
+    const advState = await page.evaluate(() => {
+      const t = document.getElementById('adv-toggle');
+      const p = document.getElementById('advanced-panel');
+      const before = { expanded: t.getAttribute('aria-expanded'), hidden: p.hidden };
+      t.click();
+      const opened = {
+        expanded: t.getAttribute('aria-expanded'),
+        hidden: p.hidden,
+        hasLook: !!p.querySelector('#opt-shadows'),
+      };
+      t.click();
+      const closed = { expanded: t.getAttribute('aria-expanded'), hidden: p.hidden };
+      return { before, opened, closed };
+    });
+    check(
+      'menu: advanced disclosure toggles',
+      advState.opened.expanded === 'true' &&
+        !advState.opened.hidden &&
+        advState.opened.hasLook &&
+        advState.closed.expanded === 'false' &&
+        advState.closed.hidden === true,
+      JSON.stringify(advState)
+    );
     await page.evaluate(() => window.__game.start());
     await page.waitForTimeout(150);
     check('playing: overlay hidden, no settings chrome', await page.locator('#overlay').isHidden());
 
     // Settings persist across reload (incl. camera + palette)
     await toMenu(page);
+    await openAdvanced(page);
     await page.selectOption('#opt-speed', 'fast');
     await page.selectOption('#opt-cam', 'top');
     await page.evaluate(() => {
@@ -798,6 +833,7 @@ async function newPage(browser, blockCDN) {
 
     // i18n: switch to Spanish, engine + static UI follow (menu state)
     await toMenu(page);
+    await openAdvanced(page);
     await page.selectOption('#opt-lang', 'es');
     check(
       'i18n: Spanish start button',
@@ -845,6 +881,7 @@ async function newPage(browser, blockCDN) {
     );
     await page.goto('http://127.0.0.1:' + PORT + '/index.html', { waitUntil: 'load' });
     await page.waitForFunction(() => !!window.__game, null, { timeout: 20000 });
+    await openAdvanced(page);
     await page.selectOption('#opt-lang', 'auto');
 
     // Kid mode: one tap presets slow + wrap, no obstacles
@@ -1124,6 +1161,7 @@ async function newPage(browser, blockCDN) {
 
     // On-screen buttons: force-show toggle (menu) then steer in-game
     await toMenu(page);
+    await openAdvanced(page);
     await page.locator('#opt-dpad').check();
     check('buttons setting: dpad appears', await page.locator('#dpad').isVisible());
     await page.locator('#btn-play').click();
@@ -1133,6 +1171,7 @@ async function newPage(browser, blockCDN) {
     const dDir = await page.evaluate(() => window.__game.dir);
     check('dpad: left button turns', dDir.y === -1, JSON.stringify(dDir));
     await toMenu(page);
+    await openAdvanced(page);
     await page.locator('#opt-dpad').uncheck();
 
     // Pause menu: Resume / Restart / Menu
@@ -1230,11 +1269,13 @@ async function newPage(browser, blockCDN) {
     await page.waitForTimeout(300);
     check('music: playing after start', (await page.evaluate(() => window.__game.musicPlaying())) === true);
     await toMenu(page);
+    await openAdvanced(page);
     await page.locator('#opt-music').uncheck();
     await page.evaluate(() => window.__game.start());
     await page.waitForTimeout(300);
     check('music: toggle stops it', (await page.evaluate(() => window.__game.musicPlaying())) === false);
     await toMenu(page);
+    await openAdvanced(page);
     await page.locator('#opt-music').check();
 
     // Space theme: stars on, trail exists, auto-quality degrades under load
@@ -2740,7 +2781,7 @@ async function newPage(browser, blockCDN) {
     );
     check(
       'records: the menu records row names the mode best',
-      recQuit.line.indexOf(String(recPlay.score)) >= 0 && recQuit.line.indexOf('🏆') === 0,
+      recQuit.line.indexOf(String(recPlay.score)) >= 0 && recQuit.line.indexOf('Wrap') >= 0,
       recQuit.line
     );
     check(
@@ -2753,10 +2794,13 @@ async function newPage(browser, blockCDN) {
     const recReload = await pRec.evaluate(() => window.__game.bests['wrap-fast']);
     check('records: per-mode best survives a reload', recReload === recPlay.score, String(recReload));
     // restart mid-run must not throw the best away either
+    // (pause first: a live snake can eat a respawned orb between this read and
+    // the click one tick later, which races the comparison — pause makes it deterministic)
     const recRestart = await pRec.evaluate(() => {
       const gm = window.__game;
       gm.start();
       gm.forceEats(4);
+      gm.pause();
       return { score: gm.score, best: gm.records.overall };
     });
     await pRec.locator('#btn-restart').click();

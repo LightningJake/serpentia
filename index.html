@@ -200,15 +200,32 @@
                 <label class="toggle"
                   ><input type="checkbox" id="opt-kid" /> <span data-i18n="set_kid">🧒 Kid mode</span></label
                 >
-                <label class="toggle"
-                  ><input type="checkbox" id="opt-wrap" /> <span data-i18n="set_wrap">Wrap walls</span></label
-                >
-                <label class="toggle"
-                  ><input type="checkbox" id="opt-obstacles" />
-                  <span data-i18n="set_obstacles">Obstacles</span></label
-                >
+                <!-- Mode state store: the only visible controls are the Mode pills
+                     above and the Kid mode toggle. These two inputs keep the
+                     snake3d.settings payload and the daily-challenge pin working;
+                     they are intentionally not rendered. -->
+                <div hidden aria-hidden="true">
+                  <input type="checkbox" id="opt-wrap" />
+                  <input type="checkbox" id="opt-obstacles" />
+                </div>
               </div>
             </div>
+          </div>
+          <div class="row" id="play-row">
+            <button id="btn-play" class="btn primary">▶ Start game</button>
+          </div>
+          <div id="advanced-wrap">
+            <button
+              type="button"
+              id="adv-toggle"
+              class="advanced-toggle"
+              aria-expanded="false"
+              aria-controls="advanced-panel"
+            >
+              <span class="adv-label" data-i18n="adv_label">Advanced settings</span>
+              <span class="adv-chev" aria-hidden="true"></span>
+            </button>
+            <div id="advanced-panel" hidden>
             <div class="set-group">
               <h4 data-i18n="sec_look">Look &amp; feel</h4>
               <div class="set-items">
@@ -279,6 +296,7 @@
                 </label>
               </div>
             </div>
+            </div>
           </div>
           <div class="controls-grid" data-i18n-aria="ctl_steer" aria-label="How to steer">
             <div>
@@ -296,9 +314,6 @@
               >
             </div>
             <div>📱 <span data-i18n="ctl_touch">Swipe or on-screen buttons</span></div>
-          </div>
-          <div class="row" id="play-row">
-            <button id="btn-play" class="btn primary">▶ Start game</button>
           </div>
           <div class="row" id="pause-menu" hidden>
             <button id="btn-bank" class="btn bank" data-i18n="bank_btn" data-i18n-title="tip_bank" hidden>
@@ -331,7 +346,7 @@
               🗑 Erase all progress
             </button>
           </div>
-          <p class="hint">
+          <p class="hint" id="menu-foot">
             <span data-i18n="hint_goal">6 foods per level, new arena each level</span> &nbsp;•&nbsp;
             <span data-i18n="hint_keys">Pause: Space • Restart: Enter • Drag to orbit • Wheel to zoom</span>
           </p>
@@ -359,7 +374,7 @@
               worth 50 × combo. Pause and <b>bank</b> a chain of 5+ for a guaranteed lump sum — crash with one
               un-banked and it is gone.
             </li>
-            <li data-i18n-html="h5">Solid walls kill — or enable <b>Wrap walls</b> to pass through.</li>
+            <li data-i18n-html="h5">Solid walls kill — or pick the <b>Wrap</b> mode to pass through.</li>
             <li data-i18n-html="h6">
               Every 6 foods you level up. In <b>Obstacles</b> mode deadly blocks appear and each level adds
               more; in <b>Maze</b> mode you start inside a corridor layout and it keeps thickening. Each level
@@ -407,8 +422,14 @@
               an identical seed — chase a friend’s score.
             </li>
           </ul>
-          <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">Got it</button>
-          <button id="btn-back-help" class="btn ghost" data-i18n="btn_back">&larr; Back</button>
+          <div class="help-actions">
+            <button id="btn-close-help" class="btn primary" data-i18n="btn_gotit">
+              Got it
+            </button>
+            <button id="btn-back-help" class="btn ghost" data-i18n="btn_back">
+              &larr; Back
+            </button>
+          </div>
         </div>
       </div>
 
@@ -462,6 +483,11 @@
     <script>
       if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
         window.addEventListener('load', function () {
+          // Remember whether this page was already controlled when it loaded.
+          // The very first activation calls clients.claim(), which fires
+          // controllerchange on first-ever visits; a first-time player has no
+          // older build to be told about, so that transition stays silent.
+          var hadController = !!navigator.serviceWorker.controller;
           navigator.serviceWorker
             .register('sw.js')
             .then(function (reg) {
@@ -488,6 +514,7 @@
           // live game, a death screen, or an in-progress menu visit. The toast
           // is visible during play, unlike the menu-only row.
           navigator.serviceWorker.addEventListener('controllerchange', function () {
+            if (!hadController) return;
             if (window.__notifyUpdate) window.__notifyUpdate();
           });
         });

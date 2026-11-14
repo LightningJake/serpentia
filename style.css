@@ -111,7 +111,7 @@ body {
 .hud-left,
 .hud-right {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -121,24 +121,24 @@ body {
 .logo {
   font-weight: 800;
   letter-spacing: 0.12em;
-  font-size: 14px;
+  font-size: 13px;
   background: var(--panel);
   border: 1px solid var(--line);
-  padding: 8px 12px;
+  padding: 7px 12px;
   border-radius: 999px;
   backdrop-filter: blur(8px);
 }
 .stats {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 .pill {
   background: var(--panel);
   border: 1px solid var(--line);
-  padding: 8px 12px;
+  padding: 7px 11px;
   border-radius: 999px;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--muted);
   backdrop-filter: blur(8px);
 }
@@ -302,6 +302,70 @@ body {
   margin: 2px 0 0;
 }
 
+/* Focus rings for keyboard players. The neon glow borders alone disappear on
+   a lot of displays, so every interactive control gets an explicit ring. */
+.btn:focus-visible,
+.seg button:focus-visible,
+.advanced-toggle:focus-visible,
+.select select:focus-visible,
+.toggle input:focus-visible,
+#dpad button:focus-visible {
+  outline: 2px solid var(--accent2);
+  outline-offset: 2px;
+}
+
+/* Advanced settings disclosure (progressive disclosure). Dashed outline +
+   uppercase label: it reads as a drawer, not as another committee of inputs. */
+#advanced-wrap {
+  margin: 4px 0 2px;
+  text-align: left;
+}
+.advanced-toggle {
+  appearance: none;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: transparent;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  min-height: 44px;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+.advanced-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent2);
+}
+.adv-chev {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform 0.2s;
+}
+.advanced-toggle.open .adv-chev {
+  transform: rotate(225deg) translateY(-1px);
+}
+#advanced-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 #settings-panel {
   display: flex;
   flex-direction: column;
@@ -427,6 +491,28 @@ body {
   padding: 20px;
   z-index: 30; /* stays modal: must close before playing */
 }
+/* The list is long; the actions must never fall below the fold. The card is
+   a flex column and the <ul> scrolls, so Got it / Back stay reachable. */
+#help-modal .card {
+  display: flex;
+  flex-direction: column;
+  max-width: 560px;
+}
+#help-modal ul {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+}
+.help-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  padding-top: 14px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+}
 #nogl {
   position: absolute;
   top: 64px;
@@ -486,8 +572,8 @@ body {
 .card ul {
   text-align: left;
   color: var(--muted);
-  line-height: 1.6;
-  font-size: 14px;
+  line-height: 1.55;
+  font-size: 13.5px;
 }
 .row {
   display: flex;
@@ -500,7 +586,11 @@ body {
 #pause-menu .btn,
 #play-row .btn,
 #erase-row .btn,
-#help-modal .btn {
+#help-modal .btn,
+#share-row .btn,
+#prestige-row .btn,
+#install-row .btn,
+#update-row .btn {
   min-height: 48px;
   padding: 12px 18px;
   font-size: 15px;
@@ -513,6 +603,14 @@ body {
 #erase-row {
   gap: 12px;
   margin: 18px 0 10px;
+}
+/* The single primary action on the menu gets the full width of the card: it is
+   what most players came here to press. */
+#play-row .btn.primary {
+  width: 100%;
+  max-width: 340px;
+  font-size: 16px;
+  letter-spacing: 0.03em;
 }
 .hint {
   font-size: 12px;
@@ -694,6 +792,23 @@ kbd {
   /* toast would sit on top of the D-pad cluster down here */
   #toast {
     bottom: 200px;
+  }
+}
+/* Short landscape/small windows: keep the Start button above the fold by
+   dropping the purely informational blocks. */
+@media (max-height: 720px) {
+  .controls-grid {
+    display: none;
+  }
+  #menu-foot {
+    display: none;
+  }
+  #overlay .card {
+    padding-top: 18px;
+    padding-bottom: 18px;
+  }
+  .best-hero {
+    margin-bottom: 4px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

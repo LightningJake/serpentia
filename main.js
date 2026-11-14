@@ -430,11 +430,12 @@
     if (life.prestige > 0) s += ' • ⭐+' + life.prestige * 10 + '%';
     return s;
   }
-  // Records row under the lifetime line on the menu card: the overall best, the
-  // best for whatever mode+speed is currently selected (so the player can see
-  // the number they are about to chase), and the daily best + streak.
+  // Records row under the lifetime line on the menu card: the best for whatever
+  // mode+speed is currently selected (so the player can see the number they are
+  // about to chase), and the daily best + streak. The overall best is not repeated
+  // here — the 🏆 hero above the card already shows it.
   function recordsLine() {
-    var parts = ['🏆 ' + t('st_best') + ' ' + best];
+    var parts = [];
     var k = modeKey();
     if (bests[k] > 0) parts.push(t('st_mode_best', { m: keyLabel(k) }) + ' ' + bests[k]);
     if (dailyRec.base > 0) parts.push(t('st_daily_best') + ' ' + dailyRec.base);
@@ -946,6 +947,8 @@
     // settings live in the main menu; pause gets the pointer note instead
     var sp = $('settings-panel');
     if (sp) sp.hidden = state !== 'menu';
+    var aw = $('advanced-wrap');
+    if (aw) aw.hidden = state !== 'menu';
     var pn = $('pause-note');
     if (pn) pn.hidden = state !== 'paused';
     // Streak bank rides the pause card: it is the only moment mid-run where the
@@ -2832,6 +2835,33 @@
     var el = $(id);
     if (el) el.addEventListener('change', syncModeSeg);
   });
+  // Advanced settings disclosure (progressive disclosure): the menu front page
+  // carries only the essentials; the rest lives behind one labelled, keyboard-
+  // reachable button. The open state persists so repeat players who use it
+  // keep it open. Not part of snake3d.settings — it is chrome, not gameplay.
+  (function () {
+    var toggle = $('adv-toggle');
+    var panel = $('advanced-panel');
+    if (!toggle || !panel) return;
+    function setOpen(open, persist) {
+      panel.hidden = !open;
+      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      toggle.classList.toggle('open', open);
+      if (persist) {
+        try {
+          store.set('snake3d.advanced', open ? '1' : '0');
+        } catch (e) {}
+      }
+    }
+    var saved = null;
+    try {
+      saved = store.get('snake3d.advanced');
+    } catch (e) {}
+    setOpen(saved === '1', false);
+    toggle.addEventListener('click', function () {
+      setOpen(panel.hidden, true);
+    });
+  })();
   if ($('opt-colorblind')) $('opt-colorblind').addEventListener('change', applyPalette);
   if ($('opt-skin'))
     $('opt-skin').addEventListener('change', function (e) {
