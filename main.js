@@ -87,12 +87,23 @@
   // randomness (particles, decor, textures) stays unseeded on purpose.
   var seedNum = null,
     seedGen = null;
-  // Map generator version. gen=1 is the legacy mirrored LAYOUTS — the only
-  // algorithm that has ever shipped, so every existing ?seed= link means gen=1.
-  // ?gen=2 opts into the validated multi-template generator (logic.gen2Plan).
-  // A seed is only meaningful to the algorithm that produced it, so new links
-  // carry their version explicitly and old links never silently change maps.
-  var mapGen = 1;
+  // Map generator version. gen=2 (the validated multi-template generator) is
+  // now the DEFAULT for new players. A seed only has meaning for the algorithm
+  // that produced it: old links that carried ?seed= / ?daily= WITHOUT an
+  // explicit ?gen= are therefore pinned back to the legacy gen=1 algorithm so
+  // previously shared links keep replaying their original maps. New share
+  // links carry ?gen=2 explicitly, making the contract unambiguous.
+  var mapGen = 2;
+  // Bare links have no seedNum, so the gameplay rng stays unseeded (Math.random)
+  // as before. gen=2's layout generator still needs a deterministic-per-run
+  // seed; this session seed gives each new player a different validated map
+  // and is written into shared links so their friends get the same one.
+  var gen2SessionSeed = null;
+  function gen2SeedForPlan() {
+    if (seedNum != null) return seedNum;
+    if (gen2SessionSeed == null) gen2SessionSeed = Math.floor(Math.random() * 1000000000);
+    return gen2SessionSeed;
+  }
   function rng() {
     if (seedNum == null) return Math.random();
     if (!seedGen) seedGen = SnakeLogic.mulberry32(seedNum);
@@ -1025,7 +1036,10 @@
     try {
       if (!/^https?:/.test(location.protocol)) return '';
       var u = location.origin + location.pathname + '?theme=' + LEVELS[startThemeIdx].name.toLowerCase();
-      if (seedNum != null) u += '&seed=' + seedNum;
+      // Share the seed behind a default-gen2 run too, so a bare-URL player's
+      // shared map replays exactly (gen=2 is appended right below).
+      var sharedSeed = seedNum != null ? seedNum : mapGen === 2 ? gen2SessionSeed : null;
+      if (sharedSeed != null) u += '&seed=' + sharedSeed;
       if (mapGen !== 1) u += '&gen=' + mapGen;
       // a daily is only shareable if the recipient lands on the same day *and*
       // the same rule, so pin the day rather than letting it default to today
@@ -2370,7 +2384,7 @@
     if (mapGen === 2 && !mazeOn()) {
       var plan = SnakeLogic.gen2Plan({
         theme: LEVELS[themeIdx].name,
-        seed: seedNum,
+        seed: gen2SeedForPlan(),
         n: GRID,
         head: snake[0],
         food: food,
@@ -6028,17 +6042,25 @@
         seedGen = null;
       }
     }
-    // Versioned map generator. Absent => 1 (the legacy algorithm), so every
-    // previously shared ?seed= link keeps replaying exactly the same map.
+    // Versioned map generator. gen=2 is the default for new/bare links. An
+    // explicit ?gen= always wins; otherwise a link that carried the OLD replay
+    // contract (?seed= or ?daily= without ?gen=) is pinned to gen=1 so it keeps
+    // producing the map everyone originally shared.
     var g = q.match(/[?&]gen=(\d+)/);
+    var explicitGen = false;
     if (g) {
       var gv = parseInt(g[1], 10);
-      if (gv === 1 || gv === 2) mapGen = gv;
+      if (gv === 1 || gv === 2) {
+        mapGen = gv;
+        explicitGen = true;
+      }
     }
+    if (!explicitGen && s) mapGen = 1;
     // ?daily joins today's challenge; ?daily=<day> pins a specific day so a
     // shared daily link (and the test suite) can replay it exactly.
     var d = q.match(/[?&]daily=([^&]*)/);
     if (d) {
+      if (!explicitGen) mapGen = 1;
       var day = todayIndex();
       var raw = '';
       try {

@@ -1975,6 +1975,36 @@ async function newPage(browser, blockCDN) {
       timeout: 25000,
     });
     check('gen1: seed-only link still runs the legacy generator', (await g(pGen, 'gen')) === 1);
+    // default (bare link): new players get gen=2 without any query param
+    await pGen.goto('http://127.0.0.1:' + PORT + '/index.html', {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+    });
+    await pGen.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
+      timeout: 25000,
+    });
+    const bare = await pGen.evaluate(() => {
+      const before = window.__game.gen;
+      document.getElementById('opt-obstacles').checked = false;
+      window.__game.start();
+      window.__game.pause();
+      return {
+        gen: before,
+        layout: window.__game.layout,
+        valid: window.__game.validateMap(),
+      };
+    });
+    check('gen2 default: bare link runs the new generator', bare.gen === 2, String(bare.gen));
+    check('gen2 default: unseeded run still gets a valid map', bare.valid.reach === true, JSON.stringify(bare.valid));
+    // explicit ?gen=1 still reaches the legacy algorithm
+    await pGen.goto('http://127.0.0.1:' + PORT + '/index.html?theme=meadow&gen=1', {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+    });
+    await pGen.waitForFunction(() => !!window.__game && window.__game.state === 'menu', null, {
+      timeout: 25000,
+    });
+    check('gen1: explicit ?gen=1 still available', (await g(pGen, 'gen')) === 1);
     await pGen.close();
     // 2a. ice slide: the turn lands one cell later
     await page.evaluate(() => {
