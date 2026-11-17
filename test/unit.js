@@ -175,4 +175,47 @@ eq(s4, { dir: Ld, pending: null, queue: [U] }, 'slideDir pending wins over queue
 var s5 = L.slideDir([], null, R);
 eq(s5, { dir: R, pending: null, queue: [] }, 'slideDir empty is identity');
 
+// ---- gen=2 versioned generator (prototype: Meadow) ----
+var g2opts = {
+  theme: 'Meadow',
+  seed: 7,
+  n: 20,
+  head: { x: 9, y: 10 },
+  food: { x: 14, y: 4 },
+  wrap: false,
+  occupied: [{ x: 9, y: 10 }, { x: 8, y: 10 }, { x: 7, y: 10 }, { x: 14, y: 4 }],
+};
+var g2a = L.gen2Plan(g2opts);
+var g2b = L.gen2Plan(g2opts);
+eq(g2a, g2b, 'gen2: same seed -> identical plan');
+eq(g2a.gen, 2, 'gen2: plan is versioned 2');
+eq(g2a.supported, true, 'gen2: Meadow has templates');
+eq(g2a.ok, true, 'gen2: chosen plan passes the validity gate');
+eq(g2a.reach, true, 'gen2: food reachable from spawn (BFS proof)');
+eq(g2a.open >= 0.45, true, 'gen2: open-area floor met');
+eq(g2a.attempts <= L.gen2Plan(g2opts).cells.length / 4 + 3, true, 'gen2: bounded attempts');
+// different seeds should vary the chosen template/rotation at least sometimes
+var variants = new Set();
+for (var gs = 0; gs < 24; gs++) {
+  var p = L.gen2Plan(Object.assign({}, g2opts, { seed: gs }));
+  variants.add(p.variant + ':' + p.transpose);
+}
+eq(variants.size > 1, true, 'gen2: seeds produce perceptually distinct plans');
+// sweep: every biome has 3 templates and produces a playable, distinct map
+var biomeNames = ['Meadow', 'Desert', 'Ocean', 'Volcano', 'Space', 'Forest', 'Sunset', 'Ice'];
+var sweepPlans = biomeNames.map((bn) => L.gen2Plan(Object.assign({}, g2opts, { theme: bn })));
+eq(sweepPlans.every((p) => p.supported && p.ok && p.reach && p.open >= 0.45), true,
+  'gen2: all 8 biomes pass the validity gate');
+eq(sweepPlans.every((p) => p.attempts <= 3), true, 'gen2: every biome resolves in bounded attempts');
+eq(new Set(sweepPlans.map((p) => JSON.stringify(p.cells))).size, 8,
+  'gen2: all 8 biomes yield distinct silhouettes for the same seed');
+// unsupported biome falls back cleanly rather than throwing
+var g2u = L.gen2Plan(Object.assign({}, g2opts, { theme: 'NotABiome' }));
+eq({ supported: g2u.supported, ok: g2u.ok }, { supported: false, ok: false }, 'gen2: unknown biome -> clean fallback');
+// reachability helper: a wall across the board blocks food
+var wall = {};
+for (var wy = 0; wy < 20; wy++) wall[10 + wy * 20] = true;
+eq(L.mapReachable(wall, { x: 9, y: 10 }, { x: 14, y: 4 }, 20, false), false, 'mapReachable: wall blocks target');
+eq(L.mapReachable(wall, { x: 9, y: 10 }, { x: 14, y: 4 }, 20, true), true, 'mapReachable: wrap goes around wall');
+
 console.log('\n==== unit: ' + (process.exitCode ? 'FAILURES' : n + '/' + n + ' passed') + ' ====');

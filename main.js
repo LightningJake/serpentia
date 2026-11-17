@@ -87,6 +87,12 @@
   // randomness (particles, decor, textures) stays unseeded on purpose.
   var seedNum = null,
     seedGen = null;
+  // Map generator version. gen=1 is the legacy mirrored LAYOUTS — the only
+  // algorithm that has ever shipped, so every existing ?seed= link means gen=1.
+  // ?gen=2 opts into the validated multi-template generator (logic.gen2Plan).
+  // A seed is only meaningful to the algorithm that produced it, so new links
+  // carry their version explicitly and old links never silently change maps.
+  var mapGen = 1;
   function rng() {
     if (seedNum == null) return Math.random();
     if (!seedGen) seedGen = SnakeLogic.mulberry32(seedNum);
@@ -1020,6 +1026,7 @@
       if (!/^https?:/.test(location.protocol)) return '';
       var u = location.origin + location.pathname + '?theme=' + LEVELS[startThemeIdx].name.toLowerCase();
       if (seedNum != null) u += '&seed=' + seedNum;
+      if (mapGen !== 1) u += '&gen=' + mapGen;
       // a daily is only shareable if the recipient lands on the same day *and*
       // the same rule, so pin the day rather than letting it default to today
       if (dailyOn && dailyDay != null) u += '&daily=' + dailyDay;
@@ -1542,6 +1549,343 @@
     if (!window.__ambient) return;
     window.__ambient.visible = mode === '3d' && quality !== 'low' && !reducedMotion;
   }
+  // ---------- 8-biome visual pass ----------
+  // Cheap, instanced/shader-based polish — no post-processing addons (the CDN
+  // UMD r149 has none) and no asset pipeline. One colour record per biome
+  // re-themes grid + sky + glow + hazard accents together (the "light, fog,
+  // sky and grade are one decision" principle). Everything is quality-gated
+  // (high tier only, so a slow device drops it automatically) and honours
+  // reduced motion.
+  var VIS = [
+    { grid: 0xffffff, accent: 0x2f9dff, glow: 0x8dff9f, hazard: 0x9dff6a, sky: 0.32 }, // Meadow
+    { grid: 0xffd9a0, accent: 0xfa9418, glow: 0xffc46b, hazard: 0xffd166, sky: 0.42 }, // Desert
+    { grid: 0xbfe9ff, accent: 0x1da2d8, glow: 0x7fe7ff, hazard: 0x7fd4ff, sky: 0.30 }, // Ocean
+    { grid: 0xffb59d, accent: 0xff4d2d, glow: 0xff7a2d, hazard: 0xff6a2d, sky: 0.48 }, // Volcano
+    { grid: 0xd9c6ff, accent: 0x9d5cff, glow: 0xb98cff, hazard: 0xb98cff, sky: 0.22 }, // Space
+    { grid: 0xc9f2c7, accent: 0x3ddc84, glow: 0x6dff9a, hazard: 0x6dff9a, sky: 0.34 }, // Forest
+    { grid: 0xffd1a8, accent: 0xff8c42, glow: 0xffa97a, hazard: 0xffa97a, sky: 0.44 }, // Sunset
+    { grid: 0xe8fbff, accent: 0x7fcdff, glow: 0xbfefff, hazard: 0xbfefff, sky: 0.26 }, // Ice
+  ];
+  // Per-biome food silhouettes. The base game uses one icosahedron for all 8;
+  // these are low-poly swaps — no new materials, no draw-call change.
+  var FOOD_SHAPE = [
+    ['IcosahedronGeometry', [0.38, 1]], // Meadow: honey orb
+    ['OctahedronGeometry', [0.42, 0]],  // Desert: sunfruit shard
+    ['SphereGeometry', [0.36, 10, 8]],  // Ocean: pearl
+    ['DodecahedronGeometry', [0.38, 0]], // Volcano: ember rock
+    ['OctahedronGeometry', [0.42, 0]],  // Space: ion crystal
+    ['IcosahedronGeometry', [0.38, 0]], // Forest: berry
+    ['SphereGeometry', [0.36, 10, 8]],  // Sunset: blossom
+    ['OctahedronGeometry', [0.4, 0]],   // Ice: frost crystal
+  ];
+  // Distinct decor silhouettes, merged from primitives by hand (the core UMD
+  // build has no BufferGeometryUtils addon). Geometry only — instance counts,
+  // footprint and mesh counts stay exactly as the tests expect.
+  var PROTO_DECOR = {
+    'Meadow:cone': [
+      { g: 'ConeGeometry', a: [0.34, 0.8, 5], p: [0, 0.4, 0] },
+      { g: 'ConeGeometry', a: [0.26, 0.7, 5], p: [-0.2, 0.62, 0.08] },
+      { g: 'ConeGeometry', a: [0.24, 0.62, 5], p: [0.2, 0.56, -0.06] },
+    ],
+    'Desert:rock': [
+      { g: 'DodecahedronGeometry', a: [0.46, 0], p: [0, 0.32, 0], s: [1, 0.7, 1] },
+      { g: 'DodecahedronGeometry', a: [0.28, 0], p: [0.34, 0.16, 0.2] },
+    ],
+    'Ocean:cry': [
+      { g: 'OctahedronGeometry', a: [0.5, 0], p: [0, 0.38, 0], s: [1, 1.1, 1] },
+      { g: 'ConeGeometry', a: [0.2, 0.42, 5], p: [0, 0.78, 0] },
+    ],
+    'Volcano:cone': [
+      { g: 'ConeGeometry', a: [0.36, 0.95, 5], p: [0, 0.47, 0] },
+      { g: 'ConeGeometry', a: [0.24, 0.66, 5], p: [-0.2, 0.72, 0.1] },
+      { g: 'ConeGeometry', a: [0.2, 0.58, 5], p: [0.22, 0.66, -0.08] },
+    ],
+    'Space:rock': [
+      { g: 'DodecahedronGeometry', a: [0.44, 0], p: [-0.12, 0.3, 0] },
+      { g: 'DodecahedronGeometry', a: [0.3, 0], p: [0.28, 0.46, 0.12] },
+    ],
+    'Forest:cone': [
+      { g: 'ConeGeometry', a: [0.36, 0.7, 6], p: [0, 0.35, 0] },
+      { g: 'ConeGeometry', a: [0.29, 0.62, 6], p: [0, 0.66, 0] },
+      { g: 'ConeGeometry', a: [0.21, 0.5, 6], p: [0, 0.94, 0] },
+    ],
+    'Sunset:cyl': [
+      { g: 'CylinderGeometry', a: [0.38, 0.5, 0.75, 6], p: [0, 0.38, 0] },
+      { g: 'CylinderGeometry', a: [0.3, 0.38, 0.42, 6], p: [0, 0.94, 0] },
+    ],
+    'Ice:cry': [
+      { g: 'OctahedronGeometry', a: [0.42, 0], p: [0, 0.36, 0], s: [0.8, 1.5, 0.8] },
+      { g: 'OctahedronGeometry', a: [0.26, 0], p: [0.3, 0.24, 0.1], s: [0.8, 1.3, 0.8] },
+    ],
+  };
+  function initProtoVisuals() {
+    if (window.__protoBuilt || mode !== '3d' || !scene) return;
+    var THREE = window.THREE;
+    var L = LEVELS[0];
+    // 1. Shader grid floor: one plane, crisp anti-aliased lines + a soft
+    // travelling pulse, recoloured per biome by applyProtoPalette().
+    var gg = new THREE.PlaneGeometry(GRID, GRID);
+    gg.rotateX(-Math.PI / 2);
+    var gm = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      extensions: { derivatives: true },
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color(L.grid) },
+        uAccent: { value: new THREE.Color(L.wall) },
+      },
+      vertexShader:
+        'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader:
+        'varying vec2 vUv; uniform float uTime; uniform vec3 uColor; uniform vec3 uAccent;\n' +
+        'void main(){ vec2 g = abs(fract(vUv*20.0-0.5)-0.5)/fwidth(vUv*20.0);\n' +
+        ' float line = 1.0 - min(min(g.x,g.y),1.0);\n' +
+        ' float pulse = 0.5 + 0.5*sin(vUv.y*12.0 - uTime*1.6);\n' +
+        ' float fade = smoothstep(0.0,0.08,vUv.x)*smoothstep(1.0,0.92,vUv.x)*smoothstep(0.0,0.08,vUv.y)*smoothstep(1.0,0.92,vUv.y);\n' +
+        ' gl_FragColor = vec4(mix(uColor,uAccent,0.25+0.25*pulse), line*(0.22+0.18*pulse)*fade); }',
+    });
+    var gp = new THREE.Mesh(gg, gm);
+    gp.position.y = 0.03;
+    gp.visible = false;
+    gp.renderOrder = 1;
+    scene.add(gp);
+    window.__protoGrid = gp;
+    // 2. Gradient sky dome (BackSide sphere) behind everything.
+    var sm = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: {
+        uTop: { value: new THREE.Color(L.hemiSky).multiplyScalar(0.32) },
+        uHorizon: { value: new THREE.Color(L.bg).multiplyScalar(1.25) },
+        uHeight: { value: 0.32 },
+      },
+      vertexShader:
+        'varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+      fragmentShader:
+        'varying vec3 vP; uniform vec3 uTop; uniform vec3 uHorizon; uniform float uHeight;\n' +
+        'void main(){ float h = clamp(normalize(vP).y*0.9+uHeight,0.0,1.0); gl_FragColor = vec4(mix(uHorizon,uTop,h),1.0); }',
+    });
+    var sky = new THREE.Mesh(new THREE.SphereGeometry(120, 24, 16), sm);
+    sky.renderOrder = -1;
+    sky.visible = false;
+    scene.add(sky);
+    window.__protoSky = sky;
+    // 3. Fake blob shadows: one instanced disc under head/food/obstacles.
+    var sc = document.createElement('canvas');
+    sc.width = sc.height = 64;
+    var sx = sc.getContext('2d');
+    var sg = sx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    sg.addColorStop(0, 'rgba(0,0,0,0.75)');
+    sg.addColorStop(0.55, 'rgba(0,0,0,0.3)');
+    sg.addColorStop(1, 'rgba(0,0,0,0)');
+    sx.fillStyle = sg;
+    sx.fillRect(0, 0, 64, 64);
+    var shadowGeo = new THREE.CircleGeometry(0.62, 16);
+    shadowGeo.rotateX(-Math.PI / 2);
+    var shadows = new THREE.InstancedMesh(
+      shadowGeo,
+      new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(sc), transparent: true, depthWrite: false, opacity: 0.75 }),
+      OBSTACLE_MAX + 4
+    );
+    shadows.frustumCulled = false;
+    shadows.visible = false;
+    shadows.renderOrder = 2;
+    scene.add(shadows);
+    window.__protoShadows = shadows;
+    // 4. Fake glow halos (reuse glowTexture) instead of a bloom pass.
+    function halo(color) {
+      var sp = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: glowTexture(), color: color, blending: THREE.AdditiveBlending,
+          depthWrite: false, transparent: true, opacity: 0.45,
+        })
+      );
+      sp.scale.set(1.7, 1.7, 1);
+      sp.visible = false;
+      scene.add(sp);
+      return sp;
+    }
+    window.__protoFoodGlow = halo(L.wall);
+    window.__protoHeadGlow = halo(0x39ff88);
+    // 5. gen=2 hazard accents: small glowing diamonds at deterministic cells
+    // beside obstacles. One instanced draw call; biome-coloured (ice shimmer,
+    // desert dust motes, volcano ember marks, etc.).
+    var hg = new THREE.RingGeometry(0.26, 0.44, 4);
+    hg.rotateX(-Math.PI / 2);
+    var hazards = new THREE.InstancedMesh(
+      hg,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }),
+      OBSTACLE_MAX
+    );
+    hazards.frustumCulled = false;
+    hazards.visible = false;
+    hazards.renderOrder = 1;
+    scene.add(hazards);
+    window.__protoHazard = hazards;
+    // 6. Geometry caches start empty — applyProtoPalette() builds only the
+    // CURRENT biome's food/decor shape, so a page load never constructs all
+    // 16 variants (headless SwiftShader is slow enough already).
+    window.__protoFoodGeos = {};
+    window.__protoDecorGeos = {};
+    if (foodMesh) window.__foodGeoBase = foodMesh.geometry;
+    window.__protoDummy = new THREE.Object3D();
+    window.__protoBuilt = true;
+  }
+  // Concatenate primitive buffers into one geometry by hand (no addons).
+  // Handles both indexed (cone/cylinder) and non-indexed (polyhedron) inputs.
+  function mergeParts(THREE, parts) {
+    var pos = [], nor = [], uv = [], idx = [], vOff = 0;
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      var g = new THREE[p.g](p.a[0], p.a[1], p.a[2], p.a[3]);
+      if (p.s) g.scale(p.s[0], p.s[1], p.s[2]);
+      if (p.p) g.translate(p.p[0], p.p[1], p.p[2]);
+      var pa = g.attributes.position.array, na = g.attributes.normal.array, ua = g.attributes.uv.array;
+      for (var k = 0; k < pa.length; k++) pos.push(pa[k]);
+      for (var nn = 0; nn < na.length; nn++) nor.push(na[nn]);
+      for (var u = 0; u < ua.length; u++) uv.push(ua[u]);
+      var count = g.attributes.position.count;
+      if (g.index) {
+        var ia = g.index.array;
+        for (var j = 0; j < ia.length; j++) idx.push(ia[j] + vOff);
+      } else {
+        for (var v = 0; v < count; v++) idx.push(vOff + v);
+      }
+      vOff += count;
+      g.dispose();
+    }
+    var out = new THREE.BufferGeometry();
+    out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    out.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    out.setIndex(idx);
+    return out;
+  }
+  // Push the biome palette record into every visual system at once.
+  function applyProtoPalette() {
+    if (!window.__protoBuilt) return;
+    var THREE = window.THREE;
+    var L = LEVELS[themeIdx], V = VIS[themeIdx];
+    if (window.__protoGrid) {
+      window.__protoGrid.material.uniforms.uColor.value.setHex(L.grid);
+      window.__protoGrid.material.uniforms.uAccent.value.setHex(V.accent);
+    }
+    if (window.__protoSky) {
+      window.__protoSky.material.uniforms.uTop.value.setHex(L.hemiSky).multiplyScalar(V.sky);
+      window.__protoSky.material.uniforms.uHorizon.value.setHex(L.bg).multiplyScalar(1.25);
+      window.__protoSky.material.uniforms.uHeight.value = V.sky;
+    }
+    if (window.__protoFoodGlow) window.__protoFoodGlow.material.color.setHex(V.glow);
+    if (window.__protoHazard) {
+      var c = new THREE.Color(V.hazard);
+      for (var i = 0; i < window.__protoHazard.count; i++) window.__protoHazard.setColorAt(i, c);
+      if (window.__protoHazard.instanceColor) window.__protoHazard.instanceColor.needsUpdate = true;
+    }
+    // Food silhouette (lazy, cached per biome).
+    if (foodMesh && window.__protoFoodGeos) {
+      if (!window.__protoFoodGeos[themeIdx]) {
+        var shape = FOOD_SHAPE[themeIdx];
+        window.__protoFoodGeos[themeIdx] = new THREE[shape[0]](shape[1][0], shape[1][1]);
+      }
+      foodMesh.geometry = window.__protoFoodGeos[themeIdx];
+    }
+    // Decor silhouette (lazy, cached per biome; Forest's trunk mesh is left
+    // alone because its key is not in PROTO_DECOR).
+    if (window.__decorMeshes) {
+      var L2 = LEVELS[themeIdx];
+      var key = L2.name + ':' + DECORTABLE[L2.decor].geo;
+      if (PROTO_DECOR[key]) {
+        if (!window.__protoDecorGeos[key]) window.__protoDecorGeos[key] = mergeParts(THREE, PROTO_DECOR[key]);
+        for (var di = 0; di < window.__decorMeshes.length; di++)
+          if (window.__decorOwner[di] === themeIdx) window.__decorMeshes[di].geometry = window.__protoDecorGeos[key];
+      }
+    }
+  }
+  function updateProtoVisuals(t) {
+    if (!window.__protoBuilt) return;
+    // High tier only: when FPS dips, qualityTick() steps to medium/low and
+    // these effects disappear automatically.
+    var on = quality === 'high' && mode === '3d';
+    if (window.__protoGrid) {
+      window.__protoGrid.visible = on;
+      if (window.__gridMesh) window.__gridMesh.visible = !on;
+      if (on && !reducedMotion) window.__protoGrid.material.uniforms.uTime.value = t;
+    }
+    if (window.__protoSky) window.__protoSky.visible = on;
+    if (window.__protoFoodGlow) window.__protoFoodGlow.visible = on && !!food && !!foodMesh;
+    if (window.__protoHeadGlow) window.__protoHeadGlow.visible = on && !!snake.length && !!snakeHead;
+    var d = window.__protoDummy;
+    if (window.__protoShadows && d) {
+      var sh = window.__protoShadows;
+      sh.visible = on;
+      if (on) {
+        var i = 0;
+        function disc(x, z, s) {
+          if (i >= sh.count) return;
+          d.position.set(x, 0.045, z);
+          d.scale.set(s, 1, s);
+          d.updateMatrix();
+          sh.setMatrixAt(i++, d.matrix);
+        }
+        if (snake.length) {
+          var hw = gridToWorld(snake[0].x, snake[0].y);
+          disc(hw.x, hw.z, 1.25);
+          if (window.__protoHeadGlow) window.__protoHeadGlow.position.set(hw.x, 0.62, hw.z);
+        }
+        if (food) {
+          var fw = gridToWorld(food.x, food.y);
+          disc(fw.x, fw.z, 0.85);
+          if (window.__protoFoodGlow) window.__protoFoodGlow.position.set(fw.x, 0.55, fw.z);
+        }
+        for (var o = 0; o < obstacles.length && i < sh.count - 1; o++) {
+          var ow = gridToWorld(obstacles[o].x, obstacles[o].y);
+          disc(ow.x, ow.z, 0.95);
+        }
+        for (; i < sh.count; i++) {
+          d.position.set(0, -50, 0);
+          d.scale.set(0.001, 0.001, 0.001);
+          d.updateMatrix();
+          sh.setMatrixAt(i, d.matrix);
+        }
+        sh.instanceMatrix.needsUpdate = true;
+      }
+    }
+    if (window.__protoHazard && d) {
+      var hz = window.__protoHazard;
+      // Hazard accents are a gen=2 map feature; gen=1 keeps its original look.
+      var show = on && mapGen === 2 && !!obstacles.length;
+      hz.visible = show;
+      if (show) {
+        hz.material.opacity = reducedMotion ? 0.42 : 0.36 + 0.14 * (0.5 + 0.5 * Math.sin(t * 2.2));
+        var dirs = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+        for (var q = 0; q < obstacles.length && q < hz.count; q++) {
+          var ob = obstacles[q];
+          var di = (ob.x * 7 + ob.y * 13 + themeIdx * 3) & 3;
+          var hx = ob.x + dirs[di][0], hy = ob.y + dirs[di][1];
+          if (hx < 0 || hy < 0 || hx >= GRID || hy >= GRID) {
+            d.position.set(0, -50, 0);
+            d.scale.setScalar(0.001);
+          } else {
+            var w = gridToWorld(hx, hy);
+            d.position.set(w.x, 0.06, w.z);
+            d.scale.setScalar(1);
+          }
+          d.updateMatrix();
+          hz.setMatrixAt(q, d.matrix);
+        }
+        for (var q2 = obstacles.length; q2 < hz.count; q2++) {
+          d.position.set(0, -50, 0);
+          d.scale.setScalar(0.001);
+          d.updateMatrix();
+          hz.setMatrixAt(q2, d.matrix);
+        }
+        hz.instanceMatrix.needsUpdate = true;
+      }
+    }
+  }
+
   function applyTheme(idx) {
     themeIdx = ((idx % LEVELS.length) + LEVELS.length) % LEVELS.length;
     var L = LEVELS[themeIdx];
@@ -1577,6 +1921,9 @@
       applyFoodTint();
       rebuildAmbient();
       applyQualityVisuals();
+      initProtoVisuals();
+      applyProtoPalette();
+      updateProtoVisuals(0);
     }
     return L;
   }
@@ -1708,10 +2055,12 @@
   // Maze opens already structured and keeps thickening; an arena keeps its
   // lighter, sparser pacing.
   function obstacleStart() {
-    return mazeOn() ? MAZE_OBSTACLE_START : OBSTACLE_START;
+    // gen=2 places whole 4-cell orbits; 8 seeds two of them so a template's
+    // silhouette is actually visible on the opening board (gen=1 stays 4).
+    return mazeOn() ? MAZE_OBSTACLE_START : mapGen === 2 ? 8 : OBSTACLE_START;
   }
   function obstaclePerLevel() {
-    return mazeOn() ? MAZE_OBSTACLE_PER_LEVEL : OBSTACLE_PER_LEVEL;
+    return mazeOn() ? MAZE_OBSTACLE_PER_LEVEL : mapGen === 2 ? 4 : OBSTACLE_PER_LEVEL;
   }
   function setMode(m) {
     if (m === 'wrap') {
@@ -1991,6 +2340,14 @@
     if (extra) o[extra.x + extra.y * GRID] = true;
     return o;
   }
+  // Occupied cells as {x,y}, for the gen=2 validity gate (logic.js is pure and
+  // takes plain cell lists rather than this module's keyed map).
+  function occupiedMapCells() {
+    var o = occupiedMap();
+    var out = [];
+    for (var k in o) out.push({ x: +k % GRID, y: Math.floor(+k / GRID) });
+    return out;
+  }
   function freeCell(minHeadDist) {
     var occ = occupiedMap();
     for (var t = 0; t < 250; t++) {
@@ -2004,8 +2361,37 @@
     return null;
   }
   function pickLayout() {
-    // one variant per run: pattern, transposed pattern, or classic scatter.
-    // Chosen from the seeded stream, so links replay identical maps.
+    // gen=2: versioned generator with a hard validity gate. It has its own
+    // PRNG stream, so gen-1's gameplay rng (food/bonus spawns) is untouched.
+    // Falls back to gen-1 when the biome has no gen-2 templates yet (the
+    // sweep fills those in) or when no candidate passes the gate.
+    // Maze mode keeps its purpose-built corridor layout (gen-1); gen-2's
+    // biome templates are for open arenas, not wrapping labyrinths.
+    if (mapGen === 2 && !mazeOn()) {
+      var plan = SnakeLogic.gen2Plan({
+        theme: LEVELS[themeIdx].name,
+        seed: seedNum,
+        n: GRID,
+        head: snake[0],
+        food: food,
+        wrap: wrapOn(),
+        occupied: occupiedMapCells(),
+      });
+      window.__gen2Plan = plan;
+      if (plan.supported && plan.ok) {
+        runLayout = {
+          base: plan.base,
+          transpose: plan.transpose,
+          gen: 2,
+          variant: plan.variant,
+          reach: plan.reach,
+          open: plan.open,
+        };
+        return;
+      }
+    }
+    // gen=1 (default): one variant per run — pattern, transposed pattern, or
+    // classic scatter. Chosen from the seeded stream, so links replay maps.
     var r = rng();
     if (mazeOn()) {
       // never scatter in a maze: random confetti instead of walls is exactly
@@ -3357,6 +3743,7 @@
     grid.material.opacity = 0.55;
     scene.add(grid);
     window.__gridMat = grid.material;
+    window.__gridMesh = grid;
 
     var wallMat = new THREE.MeshStandardMaterial({
       color: 0x2f9dff,
@@ -4857,6 +5244,7 @@
     if (foodLight) foodLight.visible = foodShown;
     if (foodBase) foodBase.visible = foodShown;
     if (window.__gridMat && !reducedMotion) window.__gridMat.opacity = 0.45 + 0.15 * Math.sin(t * 1.2);
+    updateProtoVisuals(t / 1000);
     // bonus pickup motion (countdown handled above for both modes)
     for (var mbi = 0; mbi < bonuses.length && window.__bonusMeshes; mbi++) {
       var mbm = window.__bonusMeshes[mbi];
@@ -5479,7 +5867,32 @@
       return k === 'spike' ? 'tri' : k === 'rock' ? 'circle' : k === 'cry' ? 'diamond' : 'square';
     },
     get layout() {
-      return runLayout ? { scatter: !!runLayout.scatter, transpose: !!runLayout.transpose } : null;
+      return runLayout
+        ? {
+            scatter: !!runLayout.scatter,
+            transpose: !!runLayout.transpose,
+            gen: runLayout.gen || 1,
+            variant: runLayout.variant == null ? -1 : runLayout.variant,
+            reach: !!runLayout.reach,
+            open: runLayout.open || 0,
+          }
+        : null;
+    },
+    get gen() {
+      return mapGen;
+    },
+    get genPlan() {
+      return window.__gen2Plan ? JSON.parse(JSON.stringify(window.__gen2Plan)) : null;
+    },
+    // Re-run the validity gate on the CURRENT board — a test can assert that a
+    // shipped map is provably playable, not just that generation returned.
+    validateMap: function () {
+      var occ = occupiedMap();
+      if (!snake.length || !food) return { reach: false, open: 0 };
+      return {
+        reach: SnakeLogic.mapReachable(occ, snake[0], food, GRID, wrapOn()),
+        open: Math.round(SnakeLogic.openArea(occ, snake[0], GRID, wrapOn()) * 1000) / 1000,
+      };
     },
     // Test hook: force a layout variant instead of rolling the seeded dice.
     // The symmetry assert needs a patterned variant deterministically; with
@@ -5503,6 +5916,19 @@
         return foodMesh ? foodMesh.material.color.getHex() : -1;
       } catch (e) {
         return -1;
+      }
+    },
+    // Visual-sweep hooks: geometry identities prove each biome re-themes its
+    // food + decor silhouette, not just its colours.
+    get foodGeometry() {
+      return foodMesh ? foodMesh.geometry.uuid : '';
+    },
+    get meadowDecorGeometry() {
+      try {
+        var i = window.__decorOwner ? window.__decorOwner.indexOf(themeIdx) : -1;
+        return i >= 0 ? window.__decorMeshes[i].geometry.uuid : '';
+      } catch (e) {
+        return '';
       }
     },
     get wallH() {
@@ -5601,6 +6027,13 @@
         seedNum = n;
         seedGen = null;
       }
+    }
+    // Versioned map generator. Absent => 1 (the legacy algorithm), so every
+    // previously shared ?seed= link keeps replaying exactly the same map.
+    var g = q.match(/[?&]gen=(\d+)/);
+    if (g) {
+      var gv = parseInt(g[1], 10);
+      if (gv === 1 || gv === 2) mapGen = gv;
     }
     // ?daily joins today's challenge; ?daily=<day> pins a specific day so a
     // shared daily link (and the test suite) can replay it exactly.

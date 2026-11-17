@@ -178,6 +178,193 @@
     return { dir: dir, pending: null, queue: queue };
   }
 
+  // ---------- gen=2 map generator (opt-in; gen=1 links stay immutable) ----------
+  // A seed only has meaning for the algorithm that produced it, so gen-2 is a
+  // separate, versioned algorithm. Links without ?gen=2 keep running gen-1
+  // (the legacy mirrored LAYOUTS), which is why old share links never change.
+  //
+  // Gen-2 picks from several hand-authored symmetric quadrant templates,
+  // mirrors them into whole orbits (never partial, so no lopsided maps), and
+  // PROVES the spawn can reach the food with a BFS before accepting a map.
+  // Attempts are bounded by the template count and a fail-safe plan is always
+  // returned, so a pathological seed can never hang the browser.
+  var GEN2 = {
+    version: 2,
+    minOpen: 0.45, // reject candidates whose reachable open area is too small
+    // Three hand-authored quadrant templates per biome. Each is mirrored into
+    // whole 4-cell orbits, so every map stays 4-fold symmetric and head-clear.
+    // Distinct silhouettes per biome avoid "procedural oatmeal": same seed,
+    // different biome => visibly different arena, not a recoloured layout.
+    templates: {
+      Meadow: [
+        [[2, 2], [3, 6]],                  // lone stones (gen-1 shape)
+        [[1, 3], [5, 5], [3, 1]],          // crescent grove
+        [[4, 2], [2, 4], [6, 6]],          // diagonal weave
+      ],
+      Desert: [
+        [[1, 4], [4, 1], [6, 6]],          // dune diagonals
+        [[0, 6], [3, 3], [6, 0]],          // sand ridge
+        [[2, 2], [5, 5], [7, 3]],          // scattered boulders
+      ],
+      Ocean: [
+        [[2, 5], [5, 3], [7, 7]],          // tidal pools
+        [[1, 2], [4, 6], [6, 1]],          // reef arc
+        [[3, 3], [3, 7], [7, 3]],          // lagoon cross
+      ],
+      Volcano: [
+        [[4, 1], [1, 4], [4, 4], [6, 6]],  // crater cross (dense)
+        [[2, 2], [5, 2], [2, 5], [5, 5]],  // vent grid
+        [[3, 0], [0, 3], [6, 6], [3, 6]],  // lava ribs
+      ],
+      Space: [
+        [[0, 5], [5, 1], [7, 7]],          // sparse asteroids
+        [[2, 3], [6, 2], [4, 6]],          // orbital belt
+        [[1, 1], [6, 5], [3, 8]],          // drifting debris
+      ],
+      Forest: [
+        [[2, 2], [3, 5], [5, 3]],          // grove clusters (gen-1 shape)
+        [[1, 6], [4, 4], [6, 1]],          // thicket arc
+        [[3, 2], [2, 7], [7, 4]],          // wooded lanes
+      ],
+      Sunset: [
+        [[5, 2], [2, 6], [7, 6]],          // mesa arcs (gen-1 shape)
+        [[1, 3], [4, 1], [6, 4]],          // canyon rim
+        [[2, 2], [5, 6], [7, 2]],          // butte trail
+      ],
+      Ice: [
+        [[2, 0], [2, 6], [6, 2], [0, 6]],  // frozen lanes (gen-1 shape)
+        [[1, 4], [4, 1], [6, 6]],          // ice floes
+        [[3, 3], [6, 0], [0, 6], [6, 6]],  // cracked shelf
+      ],
+    },
+  };
+  // FNV-1a: fold (seed, biome, version) into one 32-bit PRNG seed so gen-2 has
+  // its own deterministic stream and never disturbs gen-1's gameplay rng.
+  function fnv1a(str) {
+    var h = 0x811c9dc5;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return h >>> 0;
+  }
+  // BFS over a 4-connected grid; obstacles are walls. Returns true on reaching
+  // the target. `wrap` mirrors the game's wrap-walls movement rule.
+  function mapReachable(occ, head, food, n, wrap) {
+    if (!head || !food) return true; // nothing to prove (caller guarantees placement)
+    if (head.x === food.x && head.y === food.y) return true;
+    var seen = {};
+    var q = [head];
+    seen[key(head.x, head.y, n)] = true;
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var qi = 0; qi < q.length; qi++) {
+      var p = q[qi];
+      for (var d = 0; d < 4; d++) {
+        var x = p.x + dirs[d][0], y = p.y + dirs[d][1];
+        if (wrap) {
+          x = ((x % n) + n) % n;
+          y = ((y % n) + n) % n;
+        } else if (x < 0 || y < 0 || x >= n || y >= n) continue;
+        // The target is walkable by definition — the caller's occupancy set
+        // includes the food itself (it is a spawned entity), so test the goal
+        // BEFORE the wall check or reachability can never succeed.
+        if (x === food.x && y === food.y) return true;
+        var k = key(x, y, n);
+        if (seen[k] || occ[k]) continue;
+        seen[k] = true;
+        q.push({ x: x, y: y });
+      }
+    }
+    return false;
+  }
+  // Fraction of the board reachable from the head — the "openness" metric.
+  function openArea(occ, head, n, wrap) {
+    var seen = {};
+    if (!head) return 0;
+    var q = [head];
+    seen[key(head.x, head.y, n)] = true;
+    var dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var qi = 0; qi < q.length; qi++) {
+      var p = q[qi];
+      for (var d = 0; d < 4; d++) {
+        var x = p.x + dirs[d][0], y = p.y + dirs[d][1];
+        if (wrap) {
+          x = ((x % n) + n) % n;
+          y = ((y % n) + n) % n;
+        } else if (x < 0 || y < 0 || x >= n || y >= n) continue;
+        var k = key(x, y, n);
+        if (seen[k] || occ[k]) continue;
+        seen[k] = true;
+        q.push({ x: x, y: y });
+      }
+    }
+    return Object.keys(seen).length / (n * n);
+  }
+  // opts: { theme, seed, n, head, food, wrap, occupied:[{x,y},...] }
+  // Returns a deterministic plan { gen, supported, base, transpose, variant,
+  // cells, reach, open, ok, attempts }. `cells` are the final mirrored obstacle
+  // cells; `ok` is the validity gate's verdict.
+  function gen2Plan(opts) {
+    var templates = GEN2.templates[opts.theme];
+    if (!templates) return { gen: 2, supported: false, ok: false };
+    var rnd = mulberry32(fnv1a(String(opts.seed) + '|' + opts.theme + '|gen2'));
+    var start = Math.floor(rnd() * templates.length);
+    var transpose = rnd() < 0.5;
+    var base = {};
+    var occupied = opts.occupied || [];
+    for (var o = 0; o < occupied.length; o++) base[key(occupied[o].x, occupied[o].y, opts.n)] = true;
+    var best = null;
+    // Bounded: one attempt per template, in a seed-chosen rotation.
+    for (var t = 0; t < templates.length; t++) {
+      var idx = (start + t) % templates.length;
+      var candidate = templates[idx];
+      if (transpose)
+        candidate = candidate.map(function (p) {
+          return [p[1], p[0]];
+        });
+      var cells = mirrorLayout(candidate, opts.n);
+      var occ = {};
+      for (var bk in base) occ[bk] = base[bk];
+      var orbitSeen = {};
+      var accepted = [];
+      for (var i = 0; i < cells.length; i++) {
+        var cx = cells[i].x, cy = cells[i].y;
+        var orb = [
+          { x: cx, y: cy },
+          { x: opts.n - 1 - cx, y: cy },
+          { x: cx, y: opts.n - 1 - cy },
+          { x: opts.n - 1 - cx, y: opts.n - 1 - cy },
+        ];
+        var okOrbit = true;
+        for (var j = 0; j < 4; j++) {
+          var k = key(orb[j].x, orb[j].y, opts.n);
+          if (occ[k] || orbitSeen[k]) { okOrbit = false; continue; }
+          orbitSeen[k] = true;
+          if (opts.head && Math.abs(orb[j].x - opts.head.x) + Math.abs(orb[j].y - opts.head.y) < 4)
+            okOrbit = false;
+        }
+        if (!okOrbit) continue;
+        for (var j2 = 0; j2 < 4; j2++) {
+          var kk = key(orb[j2].x, orb[j2].y, opts.n);
+          occ[kk] = true;
+          accepted.push(orb[j2]);
+        }
+      }
+      var reach = mapReachable(occ, opts.head, opts.food, opts.n, !!opts.wrap);
+      var open = openArea(occ, opts.head, opts.n, !!opts.wrap);
+      var plan = {
+        gen: 2, supported: true, base: candidate, transpose: transpose,
+        variant: idx, cells: accepted, reach: reach,
+        open: Math.round(open * 1000) / 1000,
+        ok: reach && open >= GEN2.minOpen && accepted.length > 0,
+        attempts: t + 1,
+      };
+      if (!best || (plan.ok && !best.ok) || (plan.ok && plan.open > best.open)) best = plan;
+      if (plan.ok) break;
+    }
+    return best || { gen: 2, supported: true, ok: false };
+  }
+
   return {
     nextPos: nextPos,
     wrapPos: wrapPos,
@@ -198,5 +385,9 @@
     mirrorLayout: mirrorLayout,
     slideDir: slideDir,
     fmtTime: fmtTime,
+    gen2Plan: gen2Plan,
+    mapReachable: mapReachable,
+    openArea: openArea,
+    fnv1a: fnv1a,
   };
 });
